@@ -10,7 +10,7 @@ import wave
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "wuwa-dubber/src"))
 from wuwa_dubber.config import AppConfig
 from wuwa_dubber.models import VoiceProfile
-from dialogue_generation import GenerationProject, BatchGenerator, file_digest, select_voice
+from dialogue_generation import GenerationProject, BatchGenerator, file_digest, select_voice, upgrade_export_edges
 
 
 def write_wav(path, frames=2205):
@@ -316,6 +316,72 @@ class GenerationTests(unittest.TestCase):
         result = self.runner().run()
         self.assertEqual(result["cached"], 1)
         self.assertEqual(len(self.client.calls), 1)
+
+    def test_new_and_cached_generation_have_edge_metadata_and_raw_cache_unchanged(self):
+        self.project.add_text("测试\n测试")
+        result = self.runner().run()
+        self.assertEqual(result['cached'], 1)
+        self.assertEqual(len(self.client.calls), 1)
+        for row in self.project.rows:
+            self.assertEqual(row.audio['edge_processing']['version'], 1)
+            self.assertEqual(row.audio['edge_processing']['original_frames'], 2205)
+        cached = next(self.runtime.cache_dir.glob('*.wav'))
+        with wave.open(str(cached), 'rb') as audio:
+            self.assertEqual(audio.getnframes(), 2205)
+
+    def test_old_export_upgrades_without_synthesis_and_keeps_original(self):
+        self.project.add_text("测试")
+        self.runner().run()
+        row = self.project.rows[0]
+        row.audio.pop('edge_processing')
+        old = self.project.audio_path(row)
+        original = old.read_bytes()
+        self.client.fail = True
+        result = self.runner().run()
+        self.assertEqual(result['resumed'], 1)
+        self.assertEqual(result['failed'], 0)
+        self.assertEqual(len(self.client.calls), 1)
+        self.assertEqual(old.read_bytes(), original)
+        self.assertEqual(row.audio['edge_processing']['version'], 1)
+
+    def test_upgraded_export_is_not_processed_again_on_resume(self):
+        self.project.add_text("测试")
+        self.runner().run()
+        old = dict(self.project.rows[0].audio)
+        with patch('audio_edges.trim_wav_edges', side_effect=AssertionError('must not trim twice')):
+            self.assertEqual(self.runner().run()['resumed'], 1)
+        self.assertEqual(self.project.rows[0].audio, old)
+
+    def test_offline_upgrade_needs_no_runtime_or_cache_and_preserves_row_content(self):
+        from dataclasses import asdict
+        self.project.add_text("测试")
+        row = self.project.rows[0]
+        path = self.project.directory/'audio/legacy.wav'
+        write_wav(path, 22050)
+        row.audio = dict(file='audio/legacy.wav', cache_key='a'*64, input_key=row.input_key('system'),
+                         sha256=file_digest(path), voice='test', duration_seconds=1)
+        before = asdict(row)
+        self.assertTrue(upgrade_export_edges(self.project, row))
+        self.assertEqual({k:v for k,v in asdict(row).items() if k != 'audio'},
+                         {k:v for k,v in before.items() if k != 'audio'})
+        self.assertEqual(row.audio['untrimmed_file'], 'audio/legacy.wav')
+        self.assertTrue(path.exists())
+        self.assertFalse(upgrade_export_edges(self.project, row))
+
+    def test_cancelled_upgrade_leaves_previous_audio_and_metadata_valid(self):
+        self.project.add_text("测试")
+        self.runner().run()
+        row = self.project.rows[0]
+        row.audio.pop('edge_processing')
+        previous = dict(row.audio)
+        stop = threading.Event()
+        stop.set()
+        from wuwa_dubber.speech_cache import SpeechCancelled
+        with self.assertRaises(SpeechCancelled):
+            upgrade_export_edges(self.project, row, stop=stop)
+        self.assertEqual(row.audio, previous)
+        self.assertTrue(self.project.audio_path(row))
+        self.assertFalse(list(self.project.directory.glob('audio/.*.tmp.wav')))
 
     def test_project_recovery_changes_inflight_to_cancelled(self):
         self.project.add_text("测试")

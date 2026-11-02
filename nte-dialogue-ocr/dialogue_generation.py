@@ -397,6 +397,46 @@ def join_wavs(paths, destination, stop):
         raise ValueError("合并音频不完整，未导出")
 
 
+def _publish_export(project, row, staging, info, stop, lock):
+    from audio_edges import EDGE_VERSION, trim_wav_edges
+    from wuwa_dubber.speech_cache import SpeechCancelled
+    edges = trim_wav_edges(staging, staging, stop, text=row.text)
+    checksum = file_digest(staging)
+    # Content-address the processed export so a failed refresh cannot replace
+    # the last playable file, and old untrimmed exports remain recoverable.
+    target = project.directory / "audio" / f"{row.id}_{info['cache_key'][:16]}_e{EDGE_VERSION}_{checksum[:12]}.wav"
+    info = dict(info, file=target.relative_to(project.directory).as_posix(), sha256=checksum,
+                duration_seconds=round((edges['end_frame']-edges['start_frame'])/edges['sample_rate'], 3),
+                edge_processing=edges, processed_at=timestamp())
+    with lock:
+        if stop.is_set():
+            raise SpeechCancelled()
+        staging.replace(target)
+        row.audio = info
+
+
+def upgrade_export_edges(project, row, *, stop=None, lock=None):
+    """Upgrade a valid old export without synthesis, preserving its original.
+
+    The caller holds the project lock and saves the project after this returns.
+    Current-version exports are not processed a second time.
+    """
+    from audio_edges import EDGE_VERSION
+    source = project.audio_path(row)
+    if not source or row.audio.get("edge_processing", {}).get("version") == EDGE_VERSION:
+        return False
+    stop = stop if stop is not None else threading.Event()
+    lock = lock if lock is not None else threading.Lock()
+    staging = source.with_name(f".{row.id}.{uuid4().hex}.tmp.wav")
+    try:
+        shutil.copyfile(source, staging)
+        info = dict(row.audio, untrimmed_file=row.audio.get("untrimmed_file", row.audio["file"]))
+        _publish_export(project, row, staging, info, stop, lock)
+    finally:
+        staging.unlink(missing_ok=True)
+    return True
+
+
 class BatchGenerator:
     def __init__(self, project, options, callback=lambda event: None, *, runtime_factory=None):
         from dialogue_dubbing import VoiceRuntime, voice_paths
@@ -442,6 +482,17 @@ class BatchGenerator:
             self.runtime = self.runtime_factory(self.options)
             if self.project.mode == "character" and self.runtime.system_mode:
                 raise ValueError("共享配音设置当前为系统朗读，请先在参考音频与音量窗口选择角色语音模型")
+            from generator_voice_review import uncertain_rows
+            issues = [(row, decision) for row, decision in uncertain_rows(self.runtime, rows) if row.voice == "auto"]
+            held_ids = {row.id for row, _ in issues}
+            summary["held"] += len(held_ids)
+            summary["voices_held"] = len(held_ids)
+            for row, decision in issues:
+                self.emit("声线待核对，已跳过：" + (row.speaker or "未指定角色") + " · " + decision.label,
+                          row_id=row.id)
+            rows = [row for row in rows if row.id not in held_ids]
+            if not rows:
+                return summary
             self.runtime.prepare(self.stop_event, self.emit, playback=False)
             if self.stop_event.is_set():
                 return summary
@@ -462,6 +513,8 @@ class BatchGenerator:
                     utterance = Utterance(row.text, speaker=profile.speaker, source="batch_generation")
                     full_key = cache.path_for(utterance, profile).stem
                     if not force and row.audio.get("cache_key") == full_key and self.project.audio_path(row):
+                        if upgrade_export_edges(self.project, row, stop=self.stop_event, lock=self.lock):
+                            self.emit("已整理已有音频的首尾空白", row_id=row.id)
                         with self.lock:
                             if self.stop_event.is_set():
                                 raise SpeechCancelled()
@@ -499,20 +552,14 @@ class BatchGenerator:
                                 merged.replace(target)
                         finally:
                             merged.unlink(missing_ok=True)
-                    with wave.open(str(temp), "rb") as audio:
-                        duration = audio.getnframes() / audio.getframerate()
-                    checksum = file_digest(temp)
-                    target = output / f"{row.id}_{full_key[:16]}.wav"
-                    info = dict(file=target.relative_to(self.project.directory).as_posix(), cache_key=full_key,
+                    info = dict(cache_key=full_key,
                                 input_key=row.input_key(self.project.mode), voice=profile.speaker,
-                                default_voice=bool(fallback), sha256=checksum, duration_seconds=round(duration, 3),
+                                default_voice=bool(fallback),
                                 elapsed_seconds=round(time.monotonic()-started, 3), cache_hit=cache_hit,
                                 generated_at=timestamp())
+                    _publish_export(self.project, row, temp, info, self.stop_event, self.lock)
                     with self.lock:
-                        if self.stop_event.is_set():
-                            raise SpeechCancelled()
-                        temp.replace(target)
-                        row.audio, row.status = info, "done"
+                        row.status = "done"
                         summary["completed"] += 1
                         summary["cached"] += int(cache_hit)
                 except Exception as exc:

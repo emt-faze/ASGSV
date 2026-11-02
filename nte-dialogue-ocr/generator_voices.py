@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import array
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -93,6 +94,8 @@ class VoiceImportTask:
             self.check_cancel()
             if process.returncode:
                 detail = error.decode("utf-8", errors="replace").strip()[-1200:]
+                if 'matches no streams' in detail or 'does not contain any stream' in detail:
+                    raise ValueError("这个视频没有可用音轨，请选择录有角色声音的视频")
                 raise ValueError("无法读取声音，请确认文件含有音轨且起始时间有效：" + detail)
         finally:
             if process.poll() is None:
@@ -117,11 +120,11 @@ class VoiceImportTask:
                 raise ValueError("片段几乎没有声音，请重新选择有人说话的范围")
         return duration
 
-    def run(self, *, preview=False):
+    def run(self, *, preview=False, prepared_reference=None, expected_sha256=None):
         from wuwa_dubber.models import VoiceProfile
         values = self.values
         source = Path(values["source"]).expanduser().resolve()
-        if not source.is_file():
+        if not source.is_file() and prepared_reference is None:
             raise ValueError("请选择本机的音频或录屏文件")
         start, duration = float(values["start"]), float(values["duration"])
         if not math.isfinite(start) or not math.isfinite(duration) or start < 0 or not 3 <= duration <= 30:
@@ -142,7 +145,14 @@ class VoiceImportTask:
         try:
             self.progress("正在截取并检查参考片段…")
             reference = stage / "reference.wav"
-            self.convert(source, reference, start, duration)
+            if prepared_reference is None:
+                self.convert(source, reference, start, duration)
+            else:
+                if not expected_sha256:
+                    raise ValueError("已核对参考片段缺少校验信息")
+                shutil.copyfile(prepared_reference, reference)
+                if hashlib.sha256(reference.read_bytes()).hexdigest() != expected_sha256:
+                    raise ValueError("参考片段已变化，请重新试听并核对")
             self.check_cancel()
             actual_duration = self.check_audio(reference)
             if preview:
@@ -154,6 +164,8 @@ class VoiceImportTask:
             (stage / "profile.json").write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
             provenance = dict(source=str(source), start_seconds=start, requested_seconds=duration,
                               actual_seconds=actual_duration, operation="user_imported_reference_clip")
+            if prepared_reference is not None:
+                provenance.update(operation="reviewed_batch_reference", reviewed_reference_sha256=expected_sha256)
             (stage / "import.json").write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
             lease = QtCore.QLockFile(str(self.data_root / "voice-import.lock"))
             lease.setStaleLockTime(0)

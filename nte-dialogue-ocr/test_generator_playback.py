@@ -132,6 +132,78 @@ class PreparedPlaybackUiTests(unittest.TestCase):
         self.wait(lambda:bool(self.dialog.received))
         self.assertEqual(self.player.played, [])
 
+    def test_latency_statistics_are_saved_and_replay_is_separate(self):
+        self.play()
+        self.wait(lambda: self.dialog.metrics.summary()['automatic_count'] == 1)
+        self.assertIn('p95', self.dialog.metrics_label.text())
+        self.dialog.replay_button.click()
+        self.wait(lambda: self.dialog.metrics.summary()['manual_count'] == 1)
+        self.assertEqual(self.dialog.metrics.summary()['automatic_count'], 1)
+        self.dialog.stop.click()
+        self.wait(lambda: not self.dialog.busy())
+        self.dialog.finished_work()
+        path = self.dialog.metrics.path
+        self.assertEqual(len(path.read_text(encoding='utf-8').splitlines()), 2)
+        self.assertTrue(path.with_suffix('.summary.json').is_file())
+        self.assertEqual((self.project.directory/'project.json').read_bytes(), self.before_project)
+
+    def test_previous_session_cannot_add_latency_to_a_new_session(self):
+        self.play()
+        before = len(self.dialog.metrics.samples)
+        event = dict(state='playing', generation=999, message='旧会话', row_id=self.row.id,
+                     session_id='old-session', latency=dict(self.dialog.metrics.samples[0]))
+        self.dialog.receive_playback(event)
+        self.assertEqual(len(self.dialog.metrics.samples), before)
+
+    def saved_record(self, text, *, identity='counted', revision=1, status='verified', speaker=None):
+        record=dict(dialogue_id=identity, revision=revision, status=status, body=text,
+                    speaker=self.row.speaker if speaker is None else speaker,
+                    body_confidence=.99,review_body_confidence=.99,speaker_confidence=.99)
+        self.dialog.receive({'record':record,'source':'current-session'})
+
+    def test_prefix_waiting_and_success_never_increment_unmatched_sentence_count(self):
+        self.dialog.start.click()
+        self.wait(lambda:self.calls>0)
+        self.observe('下')
+        self.observe('下午')
+        self.observe(self.row.text)
+        self.observe(self.row.text)
+        self.wait(lambda:bool(self.player.played))
+        self.saved_record(self.row.text)
+        self.assertIn('未匹配 0 句',self.dialog.count.text())
+
+    def test_full_record_count_deduplicates_and_revises_when_ocr_is_corrected(self):
+        self.dialog.start.click()
+        self.wait(lambda:self.calls>0)
+        self.saved_record('没有生成过的台词。',status='candidate')
+        self.assertIn('未匹配 0 句',self.dialog.count.text())
+        self.saved_record('没有生成过的台词。',revision=2)
+        self.saved_record('没有生成过的台词。',identity='duplicate')
+        self.assertIn('未匹配 1 句',self.dialog.count.text())
+        self.saved_record(self.row.text,revision=3)
+        self.saved_record(self.row.text,identity='duplicate',revision=3)
+        self.assertIn('未匹配 0 句',self.dialog.count.text())
+        self.assertEqual(self.player.played,[])
+
+    def test_ellipsis_known_prefix_and_role_waiting_are_not_missing_audio(self):
+        self.dialog.start.click()
+        self.wait(lambda:self.calls>0)
+        self.saved_record('……',identity='punctuation')
+        self.saved_record(self.row.text[:3],identity='typing')
+        self.saved_record(self.row.text,identity='wrong-name',speaker='未确认角色')
+        self.assertIn('未匹配 0 句',self.dialog.count.text())
+
+    def test_new_session_resets_missing_sentence_count(self):
+        self.dialog.start.click()
+        self.wait(lambda:self.calls>0)
+        self.saved_record('没有生成过的台词。')
+        self.assertIn('未匹配 1 句',self.dialog.count.text())
+        self.dialog.stop.click()
+        self.wait(lambda:not self.dialog.busy())
+        self.dialog.start.click()
+        self.wait(lambda:self.calls==2)
+        self.assertIn('未匹配 0 句',self.dialog.count.text())
+
     def test_close_waits_for_capture_flush_and_never_replays(self):
         self.play()
         self.release_stop.clear()

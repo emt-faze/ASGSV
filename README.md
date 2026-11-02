@@ -1,6 +1,6 @@
 # 异环 · 台词生成与自动播放工具
 
-**台词生成工具 v0.4.3 · 2026-10-31 · 用户游戏内验收通过**
+**台词生成工具 v0.4.11 · 2026-11-02 · 台词导出、视频声线与生成恢复**
 
 在本机完成“采集台词 → 核对角色声线 → 批量生成 → 试听 → 游戏内识别字幕并播放”。提前生成完整音频，游戏中匹配成功后直接播放；支持切句中断、暂停、跳过、重播和窗口最小化。
 
@@ -8,11 +8,11 @@
 
 | 下载 | 内容 |
 | --- | --- |
-| **[Windows 推荐包：含 OCR 模型](https://github.com/emt-faze/-/releases/download/dialogue-generator-v0.4.3/dialogue-generator-v0.4.3-windows-with-ocr-models.zip)** | 完整程序源码、安装入口、四个固定版本 OCR 模型 |
-| [源码与安装包](https://github.com/emt-faze/-/releases/download/dialogue-generator-v0.4.3/dialogue-generator-v0.4.3-source.zip) | 同样的程序与文档，OCR 模型在安装时下载 |
-| [SHA-256 校验文件](https://github.com/emt-faze/-/releases/download/dialogue-generator-v0.4.3/SHA256SUMS.txt) | 核对下载完整性 |
+| **[Windows 推荐包：含 OCR 模型](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.11/dialogue-generator-v0.4.11-windows-with-ocr-models.zip)** | 完整程序源码、安装入口、四个固定版本 OCR 模型 |
+| [源码与安装包](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.11/dialogue-generator-v0.4.11-source.zip) | 同样的程序与文档，OCR 模型在安装时下载 |
+| [SHA-256 校验文件](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.11/SHA256SUMS.txt) | 核对下载完整性 |
 
-[完整发布页](https://github.com/emt-faze/-/releases/tag/dialogue-generator-v0.4.3) · [使用与迁移指南](docs/台词生成工具使用指南.md) · [验证记录](docs/台词生成工具验证记录.md)
+[完整发布页](https://github.com/emt-faze/ASGSV/releases/tag/dialogue-generator-v0.4.11) · [使用与迁移指南](docs/台词生成工具使用指南.md) · [验证记录](docs/台词生成工具验证记录.md)
 
 两个包均不包含 Python、已安装环境、TTS 模型权重或个人声线与项目。首次安装仍需联网；角色模型另行下载约 2.52 GB。带模型包中的“模型”指 OCR 识别模型。
 
@@ -24,10 +24,24 @@
 4. 需要角色声音时，运行 **安装角色配音模型.bat**，然后在工具内 **添加角色声线…**。首次导入后，关闭工具并运行 **设置默认角色声线.bat**，再重新打开并选择角色模式。
 5. 点击 **识别游戏台词…**，选择游戏窗口并框选正文与角色名区域；核对台词后生成音频。
 6. 点击 **自动识别并播放…**。当前项目中已生成且有效的音频会随游戏字幕播放，切句后停止旧音频。
+7. 保存文字或分享配音时，点击 **导出台词…**，选择范围、格式和保存位置。
 
 首次使用需校准游戏区域。系统模式要求 Windows 有中文朗读声音；角色模型要求支持 CUDA 的 NVIDIA 显卡和驱动，建议完整安装预留至少 15 GB 空间。自动播放已准备好的音频不需要加载 TTS 模型。
 
-## 本版功能与修复
+## v0.4.11 新增与改进
+
+- **台词导出**：主窗口“导出台词…”支持全部台词或左侧勾选项；导出 TXT、CSV，或包含已有有效 WAV 的 ZIP。保留顺序、角色名、换行和核对状态，缺少音频也保留文字。
+- **批量建立声线**：扫描角色素材目录、推荐参考片段、可选离线转写、保存可恢复草稿；试听并逐字核对后才加入声线库，同名角色不会覆盖。
+- **视频添加声线**：可选长录屏中的 3–30 秒范围，也可扫描短视频；原视频保留，角色由使用者明确指定。
+- **声线核对与播放统计**：集中核对勾选项，显示角色名/别名/手动指定等匹配来源，并记录自动播放各阶段耗时。
+- **音频首尾整理**：结合语音位置与持续音量整理过长空白，保留句中停顿与起音尾音；不改变音量或播放速度。
+- **生成失败恢复**：仅在音频未自然结束时更换随机种子并增加长度再试一次，两次尝试共用 150 秒生成上限；残缺音频不记作成功。
+
+自动转写是可选组件：先安装主程序，再运行根目录 **安装声线自动转写.bat**，首次下载组件和约 486 MB 模型，之后使用 CPU 离线转写。未安装时可试听后手动填写参考台词。下载包不含此转写模型。
+
+v0.4.11 公开源码检查：**495 项通过，28 项因未公开私人取样而跳过**。原有 `tools/voice-library` 参考模块保留，集成到窗口的实现位于 `nte-dialogue-ocr/voice_library.py`。详见[验证记录](docs/台词生成工具验证记录.md)。
+
+## 原有功能
 
 - OCR 采集与旧记录导入，手动添加、编辑、删除和撤销删除台词。
 - 导入音频或录屏中的角色参考片段，支持角色名、别名和系统声线配置。
@@ -47,8 +61,9 @@
 | `wuwa-dubber/` | 共享声线、缓存、语音接口和旧实时配音界面 |
 | `local-voice-model/` | Qwen3-TTS 下载与本地服务 |
 | `scripts/`、`docs/` | 安装、打包、验证和使用指南 |
+| `tools/voice-library/` | 保留的原始声线批量构建参考模块 |
 
-版本号分属不同组件：台词生成工具 **0.4.3**、旧实时配音工具 **0.5.0**、独立 OCR 原发布基线 **5.0.0**。旧版历史保留：[实时配音 v0.5.0 说明](docs/实时配音v0.5.0说明.md)、[独立 OCR v5.0.0 发布](https://github.com/emt-faze/-/releases/tag/nte-ocr-v5.0.0)。
+版本号分属不同组件：台词生成工具 **0.4.11**、旧实时配音工具 **0.5.0**、独立 OCR 原发布基线 **5.0.0**。旧版历史保留：[台词生成工具 v0.4.3](https://github.com/emt-faze/ASGSV/releases/tag/dialogue-generator-v0.4.3)、[实时配音 v0.5.0 说明](docs/实时配音v0.5.0说明.md)、[独立 OCR v5.0.0 发布](https://github.com/emt-faze/ASGSV/releases/tag/nte-ocr-v5.0.0)。
 
 升级前请备份个人数据，按 [迁移说明](docs/台词生成工具使用指南.md#文件与迁移) 操作。公开包为空白声线库，不提供本机参考录音、游戏录屏、台词项目和已生成音频。
 

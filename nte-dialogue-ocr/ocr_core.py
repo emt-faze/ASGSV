@@ -7,6 +7,7 @@ Frames are uint8 BGR game-client images. All ROIs are normalized
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import dataclass
 import math
 import re
 import time
@@ -15,6 +16,15 @@ import uuid
 from typing import Any, Sequence
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class BodyReading:
+    geometry: tuple
+    lines: list
+    text: str
+    model: str
+    review_agreement: bool = False
 
 
 DEFAULT_ENGINE_OPTIONS = {
@@ -531,7 +541,7 @@ class DialogueOCR:
         return frame[top-oy:bottom-oy, left-ox:right-ox].copy(), (left, top)
 
     def _recognize_image(self, image, offset=(0, 0), scale=1.0, recover_punctuation=False, centered=False, engine=None,
-                         speaker_style=False):
+                         speaker_style=False, allow_partial=False):
         import cv2
         scaled = image if scale == 1 else cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         result, _ = (engine if engine is not None else self.engine)(scaled, use_cls=False)
@@ -698,7 +708,10 @@ class DialogueOCR:
             for row in rows.values():
                 left=min(p[0] for line in row for p in line['bbox'])
                 right=max(p[0] for line in row for p in line['bbox'])
-                if abs((left+right)/2-expected)<=image.shape[1]*.08:
+                # Only playback previews may see the still-growing left part
+                # of a centered row. Saved dialogue retains its stricter check.
+                partial = allow_partial and left<expected and right<=expected+image.shape[1]*.08
+                if abs((left+right)/2-expected)<=image.shape[1]*.08 or partial:
                     centered_rows.append(row)
             words=[line for row in centered_rows for line in row if any(c.isalnum() for c in line['text'])]
             text_bottom=max((p[1] for line in words for p in line['bbox']),default=math.inf)
@@ -750,20 +763,26 @@ class DialogueOCR:
             return key
         return ""
 
-    def process_frame(self, frame_bgr, now=None, *, client_size=None, origin=(0, 0), captured_at=None, reuse_body=False):
+    def process_frame(self, frame_bgr, now=None, *, client_size=None, origin=(0, 0), captured_at=None, reuse_body=False,
+                      preview=False):
         if frame_bgr is None:
             return self.pause(now)
-        current = self._time(now)
+        current = (time.monotonic() if now is None else float(now)) if preview else self._time(now)
+        if not math.isfinite(current):
+            raise ValueError('Invalid observation time')
         began = time.perf_counter()
         try:
             body_image, body_offset = self.region_image(frame_bgr, self.body_roi, client_size, origin)
             cache_key=(body_image.shape,body_offset)
-            if reuse_body and self._body_cache and self._body_cache[0]==cache_key:
-                body_lines,body=self._body_cache[1:]
+            if not preview and reuse_body and self._body_cache and self._body_cache.geometry==cache_key:
+                reading=self._body_cache
+                body_lines,body=reading.lines,reading.text
             else:
                 body_lines, body = self._recognize_image(body_image, body_offset, self.candidate_scale, recover_punctuation=True,
-                                                       centered=self.centered_body)
-                self._body_cache=(cache_key,body_lines,body)
+                                                       centered=self.centered_body, allow_partial=preview)
+                reading=BodyReading(cache_key,body_lines,body,self.candidate_model)
+                if not preview:
+                    self._body_cache=reading
             speaker_image, speaker_offset = None, (0, 0)
             if self.speaker_roi is not None and body:
                 speaker_image, speaker_offset = self.region_image(frame_bgr, self.speaker_roi, client_size, origin)
@@ -772,8 +791,9 @@ class DialogueOCR:
             else:
                 speaker_lines, speaker = [], ""
         except Exception:
-            self._blank_since = None
-            self._speaker_pending, self._speaker_count = "", 0
+            if not preview:
+                self._blank_since = None
+                self._speaker_pending, self._speaker_count = "", 0
             raise
         body_score = min((line["confidence"] for line in body_lines), default=0.)
         clip_evidence=clipping_evidence(body_image,body_lines,body_offset)
@@ -785,6 +805,8 @@ class DialogueOCR:
                        "candidate_model": self.candidate_model, "review_model": self.review_model,
                        "candidate_scale": self.candidate_scale,
                        "body_pixels_unchanged": bool(reuse_body),
+                       "body_evidence_model": reading.model,
+                       "body_review_agreement": reading.review_agreement,
                        "source_clipped": source_clipped,
                        "clipping_evidence": clip_evidence,
                        "coverage_warning":any(line.get('coverage_warning',False) for line in body_lines),
@@ -795,6 +817,11 @@ class DialogueOCR:
                        "crop_origin": list(origin), "body_roi": list(self.body_roi),
                        "speaker_roi": list(self.speaker_roi) if self.speaker_roi else None,
                        "processing_ms": round((time.perf_counter()-began)*1000, 3)}
+        if preview:
+            # An unfinished subtitle is playback evidence only. It must not
+            # create a record, update name identity, or enqueue a medium review.
+            observation.update(prefix_probe=True, render_stable=False)
+            return {'status':'preview', 'observation':observation, 'event':None}
         if not body:
             self._speaker_pending, self._speaker_count = "", 0
             if self._blank_since is None:
@@ -873,6 +900,17 @@ class DialogueOCR:
                        review_latency_ms=round((time.monotonic()-source["captured_at"])*1000, 3) if source["captured_at"] is not None else None,
                        revised_at=datetime.now(timezone.utc).isoformat(timespec="milliseconds"))
         self._records[dialogue_id] = revised
+        # An independent, confident reread can supply playback evidence only
+        # after the next capture proves these glyphs are still unchanged.
+        # The original saved scores/status above remain untouched. A late
+        # review cannot overwrite the reading for a different current page.
+        if (self.review_engine is not self.engine and agreement
+                and .8 <= record['body_confidence'] < self.min_confidence <= score
+                and not any(revised.get(flag) for flag in
+                            ('source_clipped','coverage_warning','review_coverage_warning'))
+                and self._last_id == dialogue_id and self._body_cache is not None
+                and _text_key(self._body_cache.text) == _text_key(record['original_text'])):
+            self._body_cache=BodyReading(self._body_cache.geometry,body_lines,text,self.review_model,True)
         del self._pending[dialogue_id]
         return revised
 

@@ -89,7 +89,14 @@ class GeneratorReleaseTests(unittest.TestCase):
         self.assertIn('打开台词生成工具.bat',names)
         self.assertIn('nte-dialogue-ocr/dialogue_generator_ui.py',names)
         self.assertIn('local-voice-model/qwen_server.py',names)
-        self.assertFalse(any('/data/' in n or '/records/' in n or n.endswith('.onnx') for n in names))
+        self.assertIn('nte-dialogue-ocr/dialogue_export.py',names)
+        self.assertIn('nte-dialogue-ocr/voice_library_ui.py',names)
+        self.assertIn('安装声线自动转写.bat',names)
+        self.assertIn('tools/voice-library/README.md',names)
+        self.assertEqual({n for n in names if n.endswith('.onnx')},
+                         {'nte-dialogue-ocr/assets/audio-edges/silero_vad_v6.onnx'})
+        self.assertFalse(any('/data/' in n or '/records/' in n or 'voice-library-drafts/' in n
+                             or n.endswith('voice-library-runtime.json') for n in names))
 
 
 if __name__=='__main__':

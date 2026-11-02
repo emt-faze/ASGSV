@@ -52,7 +52,7 @@ def check_geometry(frame, config, client_size=None):
 
 def run_loop(window, config, stop, callback, seconds=None, on_capture=None, presentation_queue=None,
              on_record=None, on_state=None, on_session=None, on_observation=None, records_root=None,
-             on_frame_change=None, on_visual_observation=None):
+             on_frame_change=None, on_visual_observation=None, on_prefix_observation=None):
     from PySide6.QtCore import QLockFile
     directory = Path(records_root) if records_root is not None else ROOT
     directory.mkdir(parents=True, exist_ok=True)
@@ -62,14 +62,15 @@ def run_loop(window, config, stop, callback, seconds=None, on_capture=None, pres
         raise RuntimeError("另一个窗口正在识别，请先停止那里的识别再开始采集")
     try:
         return _run_loop(window, config, stop, callback, seconds, on_capture, presentation_queue,
-                         on_record, on_state, on_session, on_observation, directory, on_frame_change, on_visual_observation)
+                         on_record, on_state, on_session, on_observation, directory, on_frame_change, on_visual_observation,
+                         on_prefix_observation)
     finally:
         lease.unlock()
 
 
 def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, presentation_queue=None,
               on_record=None, on_state=None, on_session=None, on_observation=None, records_root=None,
-              on_frame_change=None, on_visual_observation=None):
+              on_frame_change=None, on_visual_observation=None, on_prefix_observation=None):
     from ocr_engines import make_ocr
     from frame_gate import FrameStability
     if stop.is_set():
@@ -83,6 +84,8 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
     if stop.is_set():
         return
     stability=FrameStability(config.get('render_stable_seconds',.45))
+    from prefix_preview import PrefixPreview
+    prefix_preview=PrefixPreview() if on_prefix_observation else None
     recorder = Recorder(records_root if records_root is not None else ROOT, engine.session_id)
     if on_session:
         on_session(recorder.directory)
@@ -140,6 +143,8 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
                     on_state("unavailable")
                 engine.pause(now=now)
                 stability.reset()
+                if prefix_preview:
+                    prefix_preview.reset()
                 if now-status_at >= .5:
                     callback({"status_text": capture.status_text})
                     status_at = now
@@ -153,10 +158,18 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
             check_geometry(packet.image, config, packet.client_size)
             body,body_offset=engine.region_image(packet.image,engine.body_roi,packet.client_size,packet.origin)
             if not stability.ready(body,packet.captured_at):
+                if prefix_preview:
+                    early=prefix_preview.read(engine,packet,body,body_offset,capture)
+                    if early and not stop.is_set():
+                        if on_visual_observation and 'recognized_capture' not in early:
+                            on_visual_observation(body,early,body_offset)
+                        on_prefix_observation(early)
                 if now-status_at>=.5:
                     callback({'status_text':'正在等待文字显示完整…'})
                     status_at=now
                 continue
+            if prefix_preview:
+                prefix_preview.reset()
             if on_frame_change and not stability.unchanged:
                 # Stop old prepared audio before OCR spends time reading the
                 # new stable glyphs. Revision callbacks may refer to old pages.

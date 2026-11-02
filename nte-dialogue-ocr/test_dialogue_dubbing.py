@@ -3,7 +3,6 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import threading
-import tempfile
 import time
 import unittest
 import uuid
@@ -12,8 +11,7 @@ import wave
 
 from dialogue_dubbing import DubbingController, VoiceRuntime, join_audio, voice_paths
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'wuwa-dubber/src'))
+voice_paths({})
 from wuwa_dubber.config import AppConfig
 from wuwa_dubber.models import VoiceProfile
 from wuwa_dubber.speech_session import SpeechSession
@@ -87,9 +85,8 @@ def event(identity='one', **updates):
 
 class FlowTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='dubbing-test-')
-        self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        self.directory = Path(__file__).resolve().parent / 'validation/dubbing-tests' / uuid.uuid4().hex
+        self.directory.mkdir(parents=True)
         self.runtime = Runtime(self.directory)
         self.events = []
         self.controller = DubbingController(self.runtime, self.events.append)

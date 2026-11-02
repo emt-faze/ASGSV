@@ -13,6 +13,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from dialogue_dubbing import ROOT, VoiceRuntime, voice_paths
 from dialogue_generation import BatchGenerator, GenerationProject, latest_record, select_voice
 from system_voices import PRESETS
+from generator_voice_review import describe_voice, uncertain_rows, apply_voice_choices, review_dialog
 
 
 STATE_NAMES = {"pending": "待生成", "generating": "生成中", "done": "已完成",
@@ -127,6 +128,8 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.playback_dialog = None
         self.voice_dialog = None
         self.manual_dialog = None
+        self.review_dialog = None
+        self.export_dialog = None
         self.closing = False
         self.rendering = False
         self.editor_row = None
@@ -155,6 +158,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.ocr_button = self.button(connected_tools, "识别游戏台词…", self.open_ocr)
         self.auto_play_button = self.button(connected_tools, "自动识别并播放…", self.open_playback)
         self.add_voice_button = self.button(connected_tools, "添加角色声线…", self.add_voice)
+        self.library_button = self.button(connected_tools, "批量建立声线…", self.open_voice_library)
         self.button(connected_tools, "系统角色声线设置…", self.system_voice_settings)
         tools_note = QtWidgets.QLabel("采集台词或播放本项目已生成的音频；声线与原配音工具共用。")
         tools_note.setWordWrap(True)
@@ -165,6 +169,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.button(toolbar, "选择识别记录…", self.choose_import)
         self.manual_button = self.button(toolbar, "手动添加台词…", self.add_dialogue)
         self.button(toolbar, "粘贴台词…", self.paste_text)
+        self.export_button = self.button(toolbar, "导出台词…", self.export_dialogue)
         toolbar.addStretch()
         self.button(toolbar, "新建项目", self.new_project)
         self.button(toolbar, "打开项目…", self.open_project)
@@ -189,8 +194,8 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.mode_note.setWordWrap(True)
         self.mode_note.setStyleSheet("color:#52647a;")
         outer.addWidget(self.mode_note)
-        self.table = QtWidgets.QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["生成", "角色", "台词", "文字核对", "指定声线", "生成结果", "实际声线"])
+        self.table = QtWidgets.QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["生成", "角色", "台词", "文字核对", "指定声线", "生成结果", "实际声线", "匹配来源"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -198,7 +203,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.table.verticalHeader().setDefaultSectionSize(43)
         self.table.setMinimumHeight(190)
         header = self.table.horizontalHeader()
-        for index, width in ((0, 46), (1, 100), (3, 105), (4, 125), (5, 140), (6, 160)):
+        for index, width in ((0, 46), (1, 90), (3, 100), (4, 115), (5, 130), (6, 140), (7, 110)):
             header.resizeSection(index, width)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
         self.table.itemChanged.connect(self.check_changed)
@@ -208,14 +213,16 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.button(selection, "全选", lambda: self.check_all(True))
         self.button(selection, "全不选", lambda: self.check_all(False))
         self.button(selection, "确认勾选项已核对", self.confirm_checked)
+        self.review_voice_button = self.button(selection, "核对声线…", self.review_voices)
         self.delete_current_button = self.button(selection, "删除当前行", self.delete_current)
         self.delete_checked_button = self.button(selection, "删除勾选项", self.delete_checked)
         self.delete_checked_button.setToolTip("删除左侧打勾的所有台词；可用撤销删除恢复。")
         self.undo_button = self.button(selection, "撤销删除", self.undo_delete)
         selection.addStretch()
         self.count_label = QtWidgets.QLabel()
-        selection.addWidget(self.count_label)
+        self.count_label.setWordWrap(True)
         outer.addLayout(selection)
+        outer.addWidget(self.count_label)
         self.editor = QtWidgets.QGroupBox("当前行 · 修改后自动保存在项目中")
         box = QtWidgets.QVBoxLayout(self.editor)
         fields = QtWidgets.QHBoxLayout()
@@ -361,6 +368,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.rendering = True
         self.table.blockSignals(True)
         self.table.setRowCount(len(self.project.rows))
+        voice_held = 0
         for index, row in enumerate(self.project.rows):
             check = QtWidgets.QTableWidgetItem()
             check.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsUserCheckable)
@@ -379,13 +387,23 @@ class GeneratorWindow(QtWidgets.QDialog):
                     actual = "请重新选择声线"
             if default:
                 actual += "（默认）"
+            decision = describe_voice(self.runtime, row) if self.runtime and not row.punctuation_only else None
+            if decision and decision.needs_review and row.selected:
+                voice_held += 1
+            if decision and decision.needs_review and not row.audio:
+                actual = "待确认"
             state = "无需配音" if row.punctuation_only else STATE_NAMES.get(row.status, row.status)
             if row.status == "done" and row.audio and not row.punctuation_only:
                 state += f" · {row.audio['duration_seconds']:.1f}秒"
-            values = [row.speaker or "未指定", row.text, review, chosen, state, actual]
+            values = [row.speaker or "未指定", row.text, review, chosen, state, actual,
+                      decision.label if decision else "无需配音" if row.punctuation_only else "未就绪"]
             for column, value in enumerate(values, 1):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setToolTip(row.error if column == 5 and row.error else reason if column == 3 and reason else value)
+                if column == 7 and decision:
+                    item.setToolTip(decision.detail)
+                    if decision.needs_review:
+                        item.setForeground(QtGui.QColor("#a65c13"))
                 if column == 3 and reason:
                     item.setForeground(QtGui.QColor("#a65c13"))
                 if column == 5 and row.status == "failed":
@@ -395,7 +413,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.rendering = False
         ready = sum(row.selected and not row.punctuation_only and not row.review_reason() for row in self.project.rows)
         held = sum(row.selected and not row.punctuation_only and bool(row.review_reason()) for row in self.project.rows)
-        self.count_label.setText(f"共 {len(self.project.rows)} 条 · 可生成 {ready} 条 · 待核对 {held} 条")
+        self.count_label.setText(f"共 {len(self.project.rows)} 条 · 文字就绪 {ready} 条 · 文字待核对 {held} 条 · 声线待核对 {voice_held} 条")
         self.editor.setEnabled(not self.busy() and self.editor_row is not None)
         self.undo_button.setEnabled(not self.busy() and bool(self.project.deleted_batches))
 
@@ -556,6 +574,33 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.render()
         self.load_editor(self.table.currentRow())
 
+    def review_voices(self, rows=None):
+        if self.busy() or not self.save_editor():
+            return False
+        if not self.runtime:
+            self.status.setText("请先按生成方式下方的提示准备声线。")
+            return False
+        issues = uncertain_rows(self.runtime, rows if rows is not None else
+                                [row for row in self.project.rows if row.selected])
+        if not issues:
+            self.status.setText("勾选项的声线已明确，无需再次核对。")
+            return True
+        voices = [(self.voice.itemText(i), self.voice.itemData(i)) for i in range(self.voice.count())]
+        self.review_dialog = review_dialog(self, issues, voices)
+        self.review_dialog.finished.connect(self.close_after_child)
+        try:
+            if self.review_dialog.exec() != QtWidgets.QDialog.Accepted:
+                return False
+            changed = apply_voice_choices(self.project, self.review_dialog.choices)
+            self.render()
+            self.load_editor(self.table.currentRow())
+            remaining = len(uncertain_rows(self.runtime, [row for row, _ in issues]))
+            self.status.setText(f"已明确 {changed} 条声线；仍有 {remaining} 条待核对，生成时会跳过。")
+            return True
+        finally:
+            self.review_dialog = None
+            self.close_after_child()
+
     def import_path(self, path):
         self.save_editor()
         try:
@@ -619,6 +664,23 @@ class GeneratorWindow(QtWidgets.QDialog):
     def open_output(self):
         if self.project:
             os.startfile(self.project.directory)
+
+    def export_dialogue(self):
+        if self.busy() or not self.save_editor():
+            return
+        try:
+            from dialogue_export_ui import DialogueExportDialog
+            self.export_dialog = DialogueExportDialog(self.project, self)
+            self.export_dialog.finished.connect(self.close_after_child)
+            self.export_dialog.exec()
+            if self.export_dialog.result_report:
+                report = self.export_dialog.result_report
+                self.status.setText(f"已导出 {report['rows']} 条台词：{report['path']}")
+        except Exception as exc:
+            self.status.setText('台词导出未完成：'+str(exc))
+        finally:
+            self.export_dialog = None
+            self.close_after_child()
 
     def close_after_child(self, *_):
         if self.closing:
@@ -704,6 +766,33 @@ class GeneratorWindow(QtWidgets.QDialog):
             self.voice_dialog = None
             self.close_after_child()
 
+    def open_voice_library(self):
+        if self.busy() or not self.save_editor():
+            return
+        try:
+            from voice_library_ui import VoiceLibraryDialog
+            self.voice_dialog = VoiceLibraryDialog(self.options, self.root, self)
+            self.voice_dialog.finished.connect(self.close_after_child)
+            self.voice_dialog.exec()
+            added = self.voice_dialog.imported_count
+            if added:
+                self.refresh_voices()
+                if self.runtime:
+                    for row in self.project.rows:
+                        if row.voice == "auto" and row.audio:
+                            profile, _ = select_voice(self.runtime, row)
+                            if profile.speaker != row.audio.get("voice"):
+                                row.audio, row.status, row.error = {}, "pending", ""
+                self.project.save()
+                self.render()
+                self.load_editor(self.table.currentRow())
+            self.status.setText(f"本次新增 {added} 个角色声线。未完成的草稿可再次打开继续处理。")
+        except Exception as exc:
+            self.status.setText("批量声线未打开：" + str(exc))
+        finally:
+            self.voice_dialog = None
+            self.close_after_child()
+
     def system_voice_settings(self):
         if self.busy():
             return
@@ -783,6 +872,11 @@ class GeneratorWindow(QtWidgets.QDialog):
                 [r for r in self.project.rows if r.selected and (not failed_only or r.status == "failed")])
         if not any(not row.punctuation_only and not row.review_reason() for row in rows):
             self.status.setText("没有可生成的台词。请勾选并核对文字；纯省略号等标点无需配音。")
+            return
+        eligible = [row for row in rows if not row.punctuation_only and not row.review_reason()]
+        if uncertain_rows(self.runtime, eligible) and not self.review_voices(eligible):
+            return
+        if self.closing:
             return
         self.worker = GenerationWorker(self.project, self.options, [row.id for row in rows], force, self)
         self.worker.update.connect(self.generation_update)
@@ -869,7 +963,7 @@ class GeneratorWindow(QtWidgets.QDialog):
                     dialog.activateWindow()
 
     def closeEvent(self, event):
-        for dialog in (self.ocr_dialog, self.playback_dialog, self.voice_dialog, self.manual_dialog):
+        for dialog in (self.ocr_dialog, self.playback_dialog, self.voice_dialog, self.manual_dialog, self.review_dialog, self.export_dialog):
             if dialog and dialog.isVisible():
                 self.closing = True
                 dialog.close()

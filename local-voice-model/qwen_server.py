@@ -58,6 +58,14 @@ class PhaseTimer:
 class IncompleteSpeech(RuntimeError):
     """Generation hit its token allowance without reaching a natural end."""
 
+    def __init__(self, message, *, generated_tokens=None, token_budget=None):
+        super().__init__(message)
+        self.generated_tokens, self.token_budget = generated_tokens, token_budget
+
+
+RECOVERY_POLICY = {"version": 2, "retry_seed": 44, "retry_repetition_penalty": 1.05,
+                   "retry_budget_multiplier": 1.5, "request_timeout_seconds": 150}
+
 
 def speech_token_budget(text):
     # 12.5 frames/s: allow about half a second per letter/character, with a
@@ -65,13 +73,16 @@ def speech_token_budget(text):
     return min(1024, max(64, 24 + 6 * sum(char.isalnum() for char in text)))
 
 
-def _guard_generation(generate, torch, cancellation, *, timeout_seconds=150.0):
+def _guard_generation(generate, torch, cancellation, *, timeout_seconds=150.0, request_deadline=None):
     """Reject partial tokens when a generation deadline stops the talker."""
     from transformers import StoppingCriteria, StoppingCriteriaList
 
     class Interrupted(StoppingCriteria):
         def __init__(self):
             self.deadline = time.monotonic() + timeout_seconds
+            total_deadline = request_deadline() if request_deadline is not None else None
+            if total_deadline is not None:
+                self.deadline = min(self.deadline, total_deadline)
             self.timed_out = False
 
         def __call__(self, input_ids, scores, **kwargs):
@@ -94,7 +105,10 @@ def _guard_generation(generate, torch, cancellation, *, timeout_seconds=150.0):
             endings = sequences[:, -1].tolist()
             allowed = set(eos if isinstance(eos, (list, tuple)) else [eos])
             if not all(token in allowed for token in endings):
-                raise IncompleteSpeech("语音未完整结束，已丢弃未完成音频。")
+                shape = getattr(sequences, "shape", None)
+                raise IncompleteSpeech("语音未完整结束，已丢弃未完成音频。",
+                    generated_tokens=int(shape[-1]) if shape is not None else None,
+                    token_budget=kwargs.get("max_new_tokens"))
         return result
 
     return guarded
@@ -116,6 +130,7 @@ class VoiceEngine:
         self.active_id = None
         self.cancelled_requests = {}
         self.cancel_event = threading.Event()
+        self.generation_deadline = None
         self.prompts = OrderedDict()
         self.prompt_cache_limit = max(1, min(64, int(os.environ.get("QWEN_PROMPT_CACHE_SIZE", "16"))))
         self.model_dir = model_dir.resolve()
@@ -145,7 +160,8 @@ class VoiceEngine:
         # Attach cancellation to the inner Hugging Face talker, where criteria
         # are evaluated between generated tokens; leave vendor files untouched.
         original_generate = self.model.model.talker.generate
-        self.model.model.talker.generate = _guard_generation(original_generate, torch, self.cancel_event)
+        self.model.model.talker.generate = _guard_generation(original_generate, torch, self.cancel_event,
+            request_deadline=lambda: self.generation_deadline)
         self.load_seconds = load_timer.phases["model_load"] / 1000
         self.last_metrics = None
         self.warm = False
@@ -215,7 +231,46 @@ class VoiceEngine:
                 "warm": getattr(self, "warm", False), "warming": getattr(self, "warmup_running", False),
                 "warmup": getattr(self, "warmup_report", {"status": "not_started"}),
                 "prompt_cache": {"entries": len(self.prompts), "limit": getattr(self, "prompt_cache_limit", 16)},
-                "last_metrics": self.last_metrics}
+                "last_metrics": self.last_metrics,
+                # Recovery only affects attempts that formerly failed. Keep the
+                # successful-output identity stable so valid cached audio survives.
+                "completion_recovery": dict(RECOVERY_POLICY),
+                "last_failure": getattr(self, "last_failure", None)}
+
+    def generate_complete(self, text, language, prompt):
+        budget = speech_token_budget(text)
+        retry_budget = min(1024, max(96, math.ceil(budget * RECOVERY_POLICY['retry_budget_multiplier'])))
+        attempts = []
+        self.generation_deadline = time.monotonic() + RECOVERY_POLICY['request_timeout_seconds']
+        for number, (seed, penalty, allowance) in enumerate(((42, 1.0, budget),
+                (RECOVERY_POLICY['retry_seed'], RECOVERY_POLICY['retry_repetition_penalty'], retry_budget)), 1):
+            if self.cancel_event.is_set():
+                raise RuntimeError("本句生成已取消")
+            if time.monotonic() >= self.generation_deadline:
+                raise RuntimeError("本次生成等待超时，已丢弃未完成音频，请检查参考录音后重试。")
+            if number > 1:
+                self.torch.manual_seed(seed)
+            began = time.monotonic()
+            attempt = dict(attempt=number, seed=seed, repetition_penalty=penalty, token_budget=allowance)
+            try:
+                wavs, sr = self.model.generate_voice_clone(text=text, language=language, voice_clone_prompt=prompt,
+                    non_streaming_mode=self.inference.get('non_streaming_mode', True),
+                    repetition_penalty=penalty, max_new_tokens=allowance)
+                attempt.update(completed=True, seconds=round(time.monotonic()-began, 3))
+                attempts.append(attempt)
+                return wavs, sr, attempts
+            except IncompleteSpeech as exc:
+                attempt.update(completed=False, seconds=round(time.monotonic()-began, 3),
+                               generated_tokens=exc.generated_tokens)
+                attempts.append(attempt)
+                LOGGER.warning('incomplete_attempt %s', json.dumps(dict(request_id=self.active_id, **attempt)))
+                if self.cancel_event.is_set():
+                    raise
+                if number == 2:
+                    self.last_failure = dict(request_id=self.active_id, reason='incomplete_speech', attempts=attempts)
+                    raise IncompleteSpeech('语音两次未能完整结束，未保存音频。请核对参考文字，或选用该角色更短、清晰的完整单人片段。',
+                        generated_tokens=exc.generated_tokens, token_budget=exc.token_budget) from exc
+                LOGGER.warning('语音未自然结束，将更换随机种子并适度增加长度后重试；残缺结果不保存。')
 
     def cancel(self, request_id):
         with self.state_lock:
@@ -298,25 +353,7 @@ class VoiceEngine:
             if cancellation.is_set():
                 raise RuntimeError("本句生成已取消")
             with timer.phase("infer"), torch.inference_mode():
-                retried = False
-                for penalty in (1.0, 1.05):
-                    if cancellation.is_set():
-                        raise RuntimeError("本句生成已取消")
-                    try:
-                        wavs, sr = self.model.generate_voice_clone(
-                            text=text, language=language, voice_clone_prompt=self.prompts[key],
-                            non_streaming_mode=self.inference.get("non_streaming_mode", True),
-                            # Sustain normal syllables without a repetition penalty.
-                            # Only a non-terminating attempt uses the vendor penalty.
-                            repetition_penalty=penalty, max_new_tokens=speech_token_budget(text),
-                        )
-                        break
-                    except IncompleteSpeech:
-                        if penalty != 1.0 or cancellation.is_set():
-                            raise
-                        retried = True
-                        torch.manual_seed(42)
-                        LOGGER.warning("语音未自然结束，丢弃该次结果并使用防重复设置重试。")
+                wavs, sr, attempts = self.generate_complete(text, language, self.prompts[key])
             if cancellation.is_set():
                 raise RuntimeError("本句生成已取消")
             with timer.phase("wav_write"):
@@ -335,11 +372,13 @@ class VoiceEngine:
                        "timing_ms": timing,
                        "audio_seconds": round(len(wav) / sr, 3), "sample_rate": sr,
                        "prompt_cache_hit": prompt_cached,
-                       "completion_retry": retried,
+                       "completion_retry": len(attempts) > 1,
+                       "completion_attempts": attempts,
                        "cpu_threads": torch.get_num_threads(),
                        "peak_allocated_mib": round(torch.cuda.max_memory_allocated() / 1024**2, 1) if self.device.startswith("cuda") else None,
                        "peak_reserved_mib": round(torch.cuda.max_memory_reserved() / 1024**2, 1) if self.device.startswith("cuda") else None}
             self.last_metrics = metrics
+            self.last_failure = None
             LOGGER.info("synthesis %s", json.dumps(metrics, ensure_ascii=False))
             with (ROOT / "logs" / "generation.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps(metrics, ensure_ascii=False) + "\n")
@@ -351,6 +390,7 @@ class VoiceEngine:
         finally:
             with self.state_lock:
                 self.active_id = None
+                self.generation_deadline = None
             self.lock.release()
 
 

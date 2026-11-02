@@ -89,11 +89,15 @@ class SubtitleChangeGuard:
         self.minimum_capture = -float('inf')
         self.count = 0
         self.last_capture = -float('inf')
+        self.allow_growth = False
+        self.anchor = None
 
     def reset(self):
         self.reference = None
         self.body = ''
         self.count = 0
+        self.allow_growth = False
+        self.anchor = None
 
     def arm(self, image, observation, offset):
         captured = observation.get('captured_monotonic')
@@ -103,7 +107,12 @@ class SubtitleChangeGuard:
         if (not body or observation.get('body_confidence',0)<.9
                 or observation.get('source_clipped') or observation.get('coverage_warning')):
             return
-        if self.reference is not None and body==self.body:
+        growing = observation.get('prefix_probe') is True
+        if self.reference is not None and not self.allow_growth and growing:
+            # Only an independently confirmed page change can replace a full
+            # reference with an early one. Unsettled OCR must not weaken it.
+            return
+        if self.reference is not None and body==self.body and (not self.allow_growth or growing):
             return
         region=np.zeros(image.shape[:2],bool)
         for line in observation.get('body_lines',[]):
@@ -114,8 +123,60 @@ class SubtitleChangeGuard:
         ink=glyph_mask(image)&region
         if ink.sum()<8:
             return
+        if growing:
+            # Detector boxes include padding after the last visible glyph.
+            # The next typed character may legitimately enter that padding.
+            # Watch only the photographed ink span of each existing row.
+            tight=np.zeros_like(region)
+            for line in observation.get('body_lines',[]):
+                points=np.asarray(line['bbox'])-np.asarray(offset)
+                x0,y0=np.maximum(0,np.floor(points.min(axis=0)).astype(int)-1)
+                x1,y1=np.minimum(image.shape[1::-1],np.ceil(points.max(axis=0)).astype(int)+2)
+                ys,xs=np.nonzero(ink[y0:y1,x0:x1])
+                if xs.size:
+                    tight[y0:y1,x0+int(xs.min()):x0+int(xs.max())+1]=True
+            region=tight
+            ink=ink&region
         self.reference=(ink,soft_glyph_mask(image),region,float(captured))
         self.body,self.count=body,0
+        self.allow_growth = growing
+        self.anchor = None
+        if growing:
+            # Anchor the already photographed first text row. A centered
+            # typewriter line can shift as it grows, without being a new page.
+            points = np.asarray(min(observation['body_lines'],key=lambda line:min(p[1] for p in line['bbox']))['bbox'])-offset
+            x0,y0=np.maximum(0,np.floor(points.min(axis=0)).astype(int)-1)
+            x1,y1=np.minimum(image.shape[1::-1],np.ceil(points.max(axis=0)).astype(int)+2)
+            core=ink[y0:y1,x0:x1]
+            soft=self.reference[1][y0:y1,x0:x1]
+            if core.size and core.sum()>=8:
+                ys,xs=np.nonzero(core)
+                left,right=int(xs.min()),int(xs.max())+1
+                self.anchor=(core[:,left:right].copy(),soft[:,left:right].copy())
+
+    def growth_continues(self, image):
+        """Require the same photographed glyphs, permitting only translation/addition."""
+        if self.reference is None or image.shape[:2] != self.reference[0].shape:
+            return False
+        ink,soft,region,_=self.reference
+        current=glyph_mask(image)
+        current_soft=soft_glyph_mask(image)
+        limit=max(8,round(int(ink.sum())*.025))
+        if max(int((ink&~current_soft).sum()),int((current&~soft&region).sum()))<limit:
+            return True
+        if self.anchor is None:
+            return False
+        needle,needle_soft=self.anchor
+        h,w=needle.shape
+        if h>image.shape[0] or w>image.shape[1]:
+            return False
+        scores=cv2.matchTemplate(current_soft.astype(np.float32),needle.astype(np.float32),cv2.TM_CCORR_NORMED)
+        _,score,_,(x,y)=cv2.minMaxLoc(scores)
+        if not np.isfinite(score) or score<.75:
+            return False
+        missing=int((needle&~current_soft[y:y+h,x:x+w]).sum())
+        added=int((current[y:y+h,x:x+w]&~needle_soft).sum())
+        return max(missing,added)<max(8,round(int(needle.sum())*.025))
 
     def changed(self, image, captured):
         if captured<=self.last_capture:
@@ -125,6 +186,9 @@ class SubtitleChangeGuard:
             return False
         ink,soft,region,reference_at=self.reference
         if captured<=reference_at:
+            return False
+        if self.allow_growth and self.growth_continues(image):
+            self.count = 0
             return False
         if image.shape[:2]!=ink.shape:
             changed=True

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6 import QtCore, QtWidgets
 
 from dialogue_dubbing import voice_paths
 from generator_ocr import OcrCollectionDialog, CollectionWorker
 from prepared_playback import PreparedLibrary, PreparedPlayback, text_key
+from playback_metrics import PlaybackMetrics, show_metrics
 
 
 def playback_settings(options):
@@ -42,12 +44,14 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         self.accept_playback = False
         self.last_generation = -1
         self.played = 0
-        self.unmatched = set()
         self.last_played = None
+        self.playback_session = uuid4().hex
+        self.metrics = PlaybackMetrics(project.directory)
         super().__init__(root, parent)
         self.setWindowTitle('自动识别字幕并播放 · 当前项目')
         self.resize(960, 780)
-        self.note.setText('先在项目中生成台词音频，再进入游戏对话画面并开始。识别到完整字幕后播放对应音频。\n'
+        self.note.setText('先在项目中生成台词音频。前五字符（含标点）唯一匹配且稳定后提前播放，继续核对后文。\n'
+                          '同前缀多个候选或不足五字时等待整句；角色冲突或后文不符时停止。\n'
                           '字幕切换会中断上一句，同一句持续显示只播放一次。未匹配的台词会提示并保留识别记录。')
         self.project_note = QtWidgets.QLabel('播放项目：'+str(project.directory))
         self.project_note.setWordWrap(True)
@@ -56,6 +60,14 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         self.playback_status.setWordWrap(True)
         self.playback_status.setStyleSheet('color:#126d66; font-weight:600; padding:5px;')
         self.layout().insertWidget(self.layout().count()-1, self.playback_status)
+        metric_row = QtWidgets.QHBoxLayout()
+        self.metrics_label = QtWidgets.QLabel(self.metrics.label())
+        self.metrics_label.setWordWrap(True)
+        metric_row.addWidget(self.metrics_label, 1)
+        self.metrics_button = QtWidgets.QPushButton('查看延迟统计…')
+        self.metrics_button.clicked.connect(lambda: show_metrics(self, self.metrics))
+        metric_row.addWidget(self.metrics_button)
+        self.layout().insertLayout(self.layout().count()-1, metric_row)
         controls = QtWidgets.QHBoxLayout()
         self.pause_button = QtWidgets.QPushButton('暂停自动播放')
         self.pause_button.setCheckable(True)
@@ -96,7 +108,13 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
             sd.check_output_settings(device=config.output_device, channels=1)
             self.player = AudioPlayer(config.output_device, volume=config.output_volume, latency='low')
             self.last_generation = -1
-            self.played, self.unmatched = 0, set()
+            self.played = 0
+            self.metrics.save_summary()
+            self.metrics = PlaybackMetrics(self.project.directory)
+            self.metrics_label.setText(self.metrics.label())
+            self.playback_session = uuid4().hex
+            self.received.clear()
+            self.update_count()
             self.accept_playback = True
             super().start_collection()
             if not self.worker or not self.worker.isRunning():
@@ -106,7 +124,9 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
             self.status.setText('未能开始：'+str(exc))
 
     def make_worker(self, window):
-        self.controller = PreparedPlayback(self.library, self.player, self.playback_event.emit)
+        session = self.playback_session
+        self.controller = PreparedPlayback(self.library, self.player,
+            lambda event: self.playback_event.emit(dict(event, session_id=session)))
         try:
             worker = CollectionWorker(window, self.config, self.root, self, playback_events=True)
         except Exception:
@@ -130,12 +150,23 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
             self.controller.invalidate(unavailable=True)
         if 'frame_changed' in event:
             self.controller.invalidate(captured_at=event['frame_changed'])
-        if 'observation' in event:
-            self.controller.observe(event['observation'])
+        observed = event.get('observation') or event.get('prefix_observation')
+        if observed is not None:
+            self.controller.observe(observed)
+            if 'prefix_observation' in event:
+                self.current.setPlainText((observed.get('speaker') or '角色待确认')+' · 前缀识别，后文核对中\n'+(observed.get('body') or ''))
         # Persisted revisions and stop-flush records can describe an old page.
         # Only fresh frame observations above may start playback.
 
     def receive_playback(self, event):
+        if event.get('session_id', self.playback_session) != self.playback_session:
+            return
+        # A start happened even if a newer caption was queued before Qt delivered it.
+        if self.metrics.add(event):
+            self.metrics_label.setText(self.metrics.label())
+            self.metrics_label.setToolTip(self.metrics.save_error or self.metrics.summary()['definition'])
+            if not self.accept_playback:
+                self.metrics.save_summary()
         if (not self.accept_playback or event['generation'] < self.last_generation
                 or (self.controller and event['generation'] < self.controller.generation)):
             return
@@ -144,9 +175,11 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         if event['state'] == 'playing':
             self.played += 1
             self.last_played = event['row_id']
-        elif event['state'] == 'unmatched':
-            self.unmatched.add(text_key(event.get('recognized')))
         self.update_count()
+
+    @property
+    def unmatched(self):
+        return self.library.unmatched_keys(self.received.values()) if self.library else set()
 
     def update_count(self):
         available = len(self.library.lines) if self.library else sum(
@@ -175,6 +208,7 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
             self.controller.stop()
         if not self.busy():
             self.accept_playback = False
+            self.metrics.save_summary()
             for button in (self.pause_button, self.skip_button, self.replay_button):
                 button.setEnabled(False)
             self.pause_button.blockSignals(True)

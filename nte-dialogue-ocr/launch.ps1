@@ -1,4 +1,4 @@
-﻿param([switch]$Admin, [switch]$AutoConnect, [switch]$Dub, [switch]$Generate, [string]$Project)
+param([switch]$Admin, [switch]$AutoConnect, [switch]$Dub, [switch]$Generate, [string]$Project)
 $ErrorActionPreference = 'Stop'
 $ocrRoot = $PSScriptRoot
 $ocrPython = Join-Path $ocrRoot '.venv\Scripts\pythonw.exe'

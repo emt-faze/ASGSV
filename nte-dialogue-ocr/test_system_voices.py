@@ -4,8 +4,7 @@ import tempfile
 import unittest
 
 from dialogue_dubbing import VoiceRuntime, voice_paths
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'wuwa-dubber/src'))
+voice_paths({})
 from wuwa_dubber.models import VoiceProfile
 from system_voices import SystemVoiceRouter, preset_profile
 

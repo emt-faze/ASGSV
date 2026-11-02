@@ -25,7 +25,8 @@ def resolved_path(value, base=ROOT):
 
 def voice_paths(options):
     code = resolved_path(options.get("code_root", "../wuwa-dubber"))
-    data = resolved_path(options.get("data_root", str(code / "data")))
+    default_data = code / "data"
+    data = resolved_path(options.get("data_root", str(default_data if default_data.is_dir() else code / "data")))
     if not (code / "src/wuwa_dubber/speech_session.py").is_file():
         raise ValueError(f"找不到配音程序：{code}，请检查配音路径配置")
     if not (data / "config.json").is_file():
@@ -83,7 +84,7 @@ class VoiceRuntime:
         runtime = self.data_root / "model_runtime.json"
         if not runtime.is_file():
             raise ValueError(f"缺少本地模型启动配置：{runtime}")
-        # Published model paths are relative to the shared app, as in launch_app.py.
+        # Published model paths are relative to the shared application.
         return resolved_path(json.loads(runtime.read_text(encoding="utf-8-sig"))["model_root"], self.code_root)
 
     def prepare(self, stop, progress, *, playback=True):

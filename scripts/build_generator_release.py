@@ -8,28 +8,35 @@ import zipfile
 import build_release
 
 ROOT = Path(__file__).resolve().parents[1]
-DATE = (2026, 10, 31, 0, 0, 0)
+DATE = (2026, 11, 2, 0, 0, 0)
 
 
 def source_files(root=ROOT):
     root = root.resolve()
     selected = set(build_release.source_files(root))
-    selected.update(root/name for name in ('安装台词生成工具.bat', '打开台词生成工具.bat', '设置默认角色声线.bat'))
+    selected.update(root/name for name in ('安装台词生成工具.bat', '打开台词生成工具.bat', '设置默认角色声线.bat', '安装声线自动转写.bat'))
     ocr = root/'nte-dialogue-ocr'
     top = {'.gitignore', '.gitattributes', 'VERSION', 'GENERATOR_VERSION', 'README.md',
-           'THIRD_PARTY_NOTICES.md', 'requirements.txt', 'config.example.json', '台词生成工具使用说明.txt'}
+           'THIRD_PARTY_NOTICES.md', 'requirements.txt', 'config.example.json', '台词生成工具使用说明.txt',
+           'voice-library-runtime.example.json'}
     selected.update(p for p in ocr.iterdir() if p.is_file() and (p.name in top or p.suffix in {'.py','.ps1','.cmd'}))
     for directory, suffixes in {'scripts':{'.py'}, 'docs':{'.md'}}.items():
         selected.update(p for p in (ocr/directory).rglob('*') if p.is_file() and p.suffix in suffixes)
     for directory in ('assets/game-entry', 'assets/ocr-v6'):
         selected.update(p for p in (ocr/directory).iterdir() if p.is_file() and p.suffix != '.onnx')
+    selected.update(ocr/'assets/audio-edges'/name for name in
+                    ('silero_vad_v6.onnx','LICENSE-silero-vad.txt','LICENSE-faster-whisper.txt','README.txt'))
+    selected.update(p for p in (root/'tools/voice-library').rglob('*')
+                    if p.is_file() and p.suffix in {'.py','.md'} and '__pycache__' not in p.parts)
     selected.add(ocr/'validation/README.md')
-    forbidden = {'.git','.venv','data','records','generation-projects','runtime-logs','__pycache__','reference','backups'}
+    forbidden = {'.git','.venv','data','records','generation-projects','runtime-logs','__pycache__','reference','backups',
+                 'voice-library-drafts','asr-runtime'}
     for p in selected:
         relative = p.relative_to(root)
         if not p.is_file() or p.is_symlink() or not p.resolve().is_relative_to(root) or forbidden.intersection(relative.parts):
             raise ValueError('Unsafe package input: '+str(relative))
-        if p.name in {'config.json','runtime.json','generator-state.json','project.json'}:
+        if p.name in {'config.json','runtime.json','generator-state.json','project.json',
+                      'voice-library-runtime.json','voice-library-source.json'}:
             raise ValueError('Local state is not a release input')
     return sorted(selected, key=lambda p:p.relative_to(root).as_posix())
 

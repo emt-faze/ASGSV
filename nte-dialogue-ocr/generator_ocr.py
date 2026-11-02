@@ -63,16 +63,19 @@ class CollectionWorker(QtCore.QThread):
         def status(value):
             if "status_text" in value:
                 self.message.emit({"status_text": value["status_text"]})
-        def observation(value):
-            self.message.emit({"observation": {key: value.get(key) for key in
-                                               ("body", "speaker", "monotonic_seconds", "captured_monotonic",
-                                                "body_confidence", "speaker_confidence", "source_clipped",
-                                                "coverage_warning", "review_coverage_warning", "render_stable")}})
+        def observation(value, *, early=False):
+            fields = ('body','speaker','monotonic_seconds','captured_monotonic',
+                      'body_confidence','speaker_confidence','source_clipped','coverage_warning',
+                      'review_coverage_warning','render_stable','prefix_probe','prefix_stable',
+                      'prefix_confirmed_at','recognized_capture')
+            self.message.emit({'prefix_observation' if early else 'observation':
+                               {key:value.get(key) for key in fields}})
         try:
             hooks = {}
             if self.playback_events:
                 hooks = dict(on_state=lambda state: self.message.emit({"capture_state": state}),
-                             on_visual_observation=lambda *args: frame_watch.arm(*args) if frame_watch else None)
+                             on_visual_observation=lambda *args: frame_watch.arm(*args) if frame_watch else None,
+                             on_prefix_observation=lambda value: observation(value, early=True))
             (self.runner or run_loop)(self.window, self.config, self.stop_event, status,
                                       on_capture=captured,
                                       on_record=record, on_session=session, on_observation=observation,
@@ -111,7 +114,11 @@ class PlaybackFrameWatch:
 
     def arm(self, image, observation, offset):
         with self.lock:
+            captured=observation.get('captured_monotonic')
+            changed=captured is not None and self.guard.changed(image,captured)
             self.guard.arm(image,observation,offset)
+        if changed:
+            self.callback({'frame_changed': captured})
 
     def run(self):
         from ocr_core import roi_to_pixels

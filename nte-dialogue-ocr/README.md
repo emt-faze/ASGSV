@@ -1,4 +1,4 @@
-> 本目录现包含 **台词生成工具 v0.4.3**，推荐从[根目录 README](../README.md)安装，使用[台词生成器指南](../docs/台词生成工具使用指南.md)。`VERSION` 保留独立 OCR 发布基线，生成器版本见 `GENERATOR_VERSION`。下文保留独立 OCR 的原始说明。
+> 本目录现包含 **台词生成工具 v0.4.11**，推荐从[根目录 README](../README.md)安装，使用[台词生成器指南](../docs/台词生成工具使用指南.md)。`VERSION` 保留独立 OCR 发布基线，生成器版本见 `GENERATOR_VERSION`。下文保留独立 OCR 的原始说明。
 
 # 异环 · 对话文字识别
 
@@ -6,7 +6,7 @@
 
 ## 下载与安装
 
-在 [GitHub Releases](https://github.com/emt-faze/-/releases/tag/nte-ocr-v5.0.0) 下载：
+在 [GitHub Releases](https://github.com/emt-faze/ASGSV/releases/tag/nte-ocr-v5.0.0) 下载：
 
 | 文件 | 内容 | 首次安装 |
 | --- | --- | --- |

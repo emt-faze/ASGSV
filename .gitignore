@@ -48,3 +48,7 @@ Thumbs.db
 *.lock
 *.log
 nte-dialogue-ocr/assets/ocr-v6/*.onnx
+**/asr-runtime/
+**/voice-library-drafts/
+**/voice-library-runtime.json
+**/voice-library-source.json

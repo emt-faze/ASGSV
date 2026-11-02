@@ -236,9 +236,14 @@ class ProtocolTests(unittest.TestCase):
     def test_incomplete_attempt_is_retried_without_publishing_its_audio(self):
         with patch.object(self.model, "generate_voice_clone", side_effect=[
             qwen_server.IncompleteSpeech("partial"), ([[.25]*480], 24000),
-        ]) as generate:
+        ]) as generate, patch.object(self.engine.torch, 'manual_seed') as seeded:
             data, metrics = self.engine.synthesize(self.payload())
         self.assertEqual([call.kwargs["repetition_penalty"] for call in generate.call_args_list], [1.0, 1.05])
+        self.assertEqual([call.args[0] for call in seeded.call_args_list], [42, 44])
+        budgets = [call.kwargs['max_new_tokens'] for call in generate.call_args_list]
+        self.assertGreater(budgets[1], budgets[0])
+        self.assertLessEqual(budgets[1], 1024)
+        self.assertEqual([a['completed'] for a in metrics['completion_attempts']], [False, True])
         self.assertTrue(metrics["completion_retry"])
         with wave.open(io.BytesIO(data), "rb") as audio:
             self.assertEqual(audio.getnframes(), 480)
@@ -250,6 +255,49 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(generate.call_count, 2)
         self.assertIsNone(self.engine.last_metrics)
         self.assertFalse(self.engine.lock.locked())
+        self.assertEqual(self.engine.last_failure['reason'], 'incomplete_speech')
+        self.assertIsNone(self.engine.generation_deadline)
+
+    def test_successful_first_attempt_keeps_parameters_and_cache_identity(self):
+        before = dict(self.engine.health()['inference'])
+        with patch.object(self.model, 'generate_voice_clone', wraps=self.model.generate_voice_clone) as generate:
+            _, metrics = self.engine.synthesize(self.payload())
+        self.assertEqual(generate.call_count, 1)
+        self.assertEqual(generate.call_args.kwargs['repetition_penalty'], 1.0)
+        self.assertEqual(generate.call_args.kwargs['max_new_tokens'], qwen_server.speech_token_budget(self.payload()['text']))
+        self.assertFalse(metrics['completion_retry'])
+        self.assertEqual(self.engine.health()['inference'], before)
+        self.assertEqual(self.engine.health()['completion_recovery']['version'], 2)
+
+    def test_exhausted_total_deadline_prevents_another_attempt(self):
+        def incomplete(**kwargs):
+            self.engine.generation_deadline = time.monotonic()-1
+            raise qwen_server.IncompleteSpeech('partial')
+        with patch.object(self.model, 'generate_voice_clone', side_effect=incomplete) as generate:
+            with self.assertRaisesRegex(RuntimeError, '等待超时'):
+                self.engine.synthesize(self.payload())
+        self.assertEqual(generate.call_count, 1)
+        self.assertIsNone(self.engine.generation_deadline)
+        self.assertFalse(self.engine.lock.locked())
+
+    def test_non_completion_errors_do_not_trigger_recovery(self):
+        with patch.object(self.model, 'generate_voice_clone', side_effect=RuntimeError('GPU unavailable')) as generate:
+            with self.assertRaisesRegex(RuntimeError, 'GPU unavailable'):
+                self.engine.synthesize(self.payload())
+        self.assertEqual(generate.call_count, 1)
+        self.assertIsNone(self.engine.generation_deadline)
+
+    def test_inner_generation_uses_remaining_request_time(self):
+        fake_torch = SimpleNamespace(full=lambda shape, value, **kwargs: value, bool=bool)
+        fake_transformers = SimpleNamespace(StoppingCriteria=object, StoppingCriteriaList=list)
+        def partial_generate(**kwargs):
+            self.assertTrue(kwargs['stopping_criteria'][-1](SimpleNamespace(shape=(1, 1), device='cpu'), None))
+            return [[0.0] * 240], 24000
+        with patch.dict('sys.modules', {'transformers': fake_transformers}):
+            guarded = qwen_server._guard_generation(partial_generate, fake_torch, self.engine.cancel_event,
+                timeout_seconds=150, request_deadline=lambda: time.monotonic()-1)
+        with self.assertRaisesRegex(RuntimeError, '已丢弃未完成音频'):
+            guarded()
 
     def test_cancelled_incomplete_output_never_starts_retry(self):
         def cancelled(**kwargs):
