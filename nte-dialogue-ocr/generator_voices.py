@@ -14,6 +14,7 @@ from uuid import uuid4
 import wave
 
 from PySide6 import QtCore, QtWidgets
+from generator_ui_support import configure_dialog
 
 from dialogue_dubbing import voice_paths
 
@@ -290,6 +291,7 @@ class AddVoiceDialog(QtWidgets.QDialog):
         for button in (self.preview, self.stop, self.save, close):
             row.addWidget(button)
         layout.addLayout(row)
+        configure_dialog(self, 'add_voice')
 
     def browse(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "选择角色音频或游戏录屏", "",

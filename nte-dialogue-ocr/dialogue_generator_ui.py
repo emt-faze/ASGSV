@@ -14,6 +14,7 @@ from dialogue_dubbing import ROOT, VoiceRuntime, voice_paths
 from dialogue_generation import BatchGenerator, GenerationProject, latest_record, select_voice
 from system_voices import PRESETS
 from generator_voice_review import describe_voice, uncertain_rows, apply_voice_choices, review_dialog
+from generator_ui_support import configure_application, configure_dialog, set_help
 
 
 STATE_NAMES = {"pending": "待生成", "generating": "生成中", "done": "已完成",
@@ -54,6 +55,7 @@ class ManualDialogueDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.text.setFocus()
+        configure_dialog(self, 'manual')
 
     def accept(self):
         if not self.text.toPlainText().strip():
@@ -139,15 +141,6 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
         self.resize(1180, 850)
         self.setMinimumSize(950, 740)
-        self.setStyleSheet("""
-            QDialog { background:#f5f7fa; }
-            QPushButton { padding:6px 10px; }
-            QLineEdit, QPlainTextEdit, QComboBox { padding:4px; background:white; }
-            QTableWidget { background:white; gridline-color:#e6eaf0; }
-            QHeaderView::section { background:#e9eef4; padding:7px; border:0; }
-            QPushButton#primary { background:#167d77; color:white; font-weight:600; border-radius:4px; }
-            QPushButton#primary:disabled { background:#adc4c2; }
-        """)
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(18, 14, 18, 14)
         title = QtWidgets.QLabel("台词生成工具")
@@ -216,7 +209,6 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.review_voice_button = self.button(selection, "核对声线…", self.review_voices)
         self.delete_current_button = self.button(selection, "删除当前行", self.delete_current)
         self.delete_checked_button = self.button(selection, "删除勾选项", self.delete_checked)
-        self.delete_checked_button.setToolTip("删除左侧打勾的所有台词；可用撤销删除恢复。")
         self.undo_button = self.button(selection, "撤销删除", self.undo_delete)
         selection.addStretch()
         self.count_label = QtWidgets.QLabel()
@@ -291,6 +283,11 @@ class GeneratorWindow(QtWidgets.QDialog):
             self.use_project(GenerationProject.load(project_path))
         else:
             self.use_project(GenerationProject.create(self.projects_root, self.options.get("mode", "system")))
+        configure_dialog(self, 'generator')
+        set_help(self.mode, '系统中文声使用电脑已有声音；角色声线使用已添加的参考录音和本地模型。\n切换方式会重置本项目的声线选择，已有配音可能需要重新生成。', '生成方式')
+        set_help(self.batch_voice, '选择要应用的声线，再点击“应用声线”。\n只作用于左侧打勾的台词；“按角色自动选择”根据角色名和别名匹配。', '批量声线')
+        set_help(self.voice, '指定当前高亮台词的声线；“按角色自动选择”根据角色名和别名匹配。\n修改后自动保存，旧配音可能失效，需要重新生成。', '当前行声线')
+        set_help(self.confirmed, '确认当前台词的文字和角色已经人工检查。\n修改文字或角色后需重新核对；声线不明确时另用“核对声线”。')
 
     def button(self, layout, label, callback, *, idle=True):
         button = QtWidgets.QPushButton(label)
@@ -988,7 +985,7 @@ def main():
     parser.add_argument("--smoke-ms", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
     application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    application.setStyle("Fusion")
+    configure_application(application)
     font = application.font()
     font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "SimSun"])
     font.setPointSize(10)

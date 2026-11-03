@@ -8,7 +8,7 @@ import zipfile
 import build_release
 
 ROOT = Path(__file__).resolve().parents[1]
-DATE = (2026, 11, 2, 0, 0, 0)
+DATE = (2026, 11, 3, 0, 0, 0)
 
 
 def source_files(root=ROOT):

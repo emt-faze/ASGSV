@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 
 from PySide6 import QtCore, QtGui, QtWidgets
+from generator_ui_support import configure_dialog, set_help
 
 from dialogue_generation import atomic_text
 
@@ -290,6 +291,8 @@ class OcrCollectionDialog(QtWidgets.QDialog):
         self.timer.start(500)
         self.refresh()
         self.update_region_note()
+        configure_dialog(self, 'ocr')
+        set_help(self.backend, 'WGC 支持后台截图；MSS 需要游戏画面保持前台可见。\n如果预览黑屏或无法获取画面，可停止识别后切换方式，再检查框选区域。', '截图方式')
 
     def changeEvent(self, event):
         super().changeEvent(event)

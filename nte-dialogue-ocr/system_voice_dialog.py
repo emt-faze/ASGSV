@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 
 from PySide6 import QtCore, QtWidgets
+from generator_ui_support import configure_dialog, set_help, BUTTON_HELP
 
 from dialogue_dubbing import ROOT, VoiceRuntime
 from system_voices import PRESETS, SystemVoiceRouter, preset_profile
@@ -112,6 +113,7 @@ class SystemVoiceDialog(QtWidgets.QDialog):
         self.buttons.accepted.connect(self.save)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+        configure_dialog(self, 'system_voice')
 
     @staticmethod
     def combo(value, inherit=False):
@@ -182,10 +184,12 @@ class SystemVoiceDialog(QtWidgets.QDialog):
         self.worker.finished.connect(self.preview_finished)
         self.buttons.button(QtWidgets.QDialogButtonBox.Save).setEnabled(False)
         self.preview.setText("停止试听")
+        set_help(self.preview, BUTTON_HELP['system_voice'][self.preview.text()])
         self.worker.start()
 
     def preview_finished(self):
         self.preview.setText("试听所选声音")
+        set_help(self.preview, BUTTON_HELP['system_voice'][self.preview.text()])
         self.buttons.button(QtWidgets.QDialogButtonBox.Save).setEnabled(True)
         if self.closing:
             super().reject()

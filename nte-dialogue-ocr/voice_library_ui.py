@@ -3,6 +3,7 @@ from pathlib import Path
 import threading
 
 from PySide6 import QtCore, QtGui, QtWidgets
+from generator_ui_support import configure_dialog
 
 from dialogue_generation import atomic_text
 from generator_voices import VoiceImportTask, ImportCancelled
@@ -81,6 +82,7 @@ class VideoClipDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        configure_dialog(self, 'video')
 
     def show_range(self, *_):
         self.range_hint.setText(f'选取范围：{clip_time(self.start.value())} → '
@@ -300,6 +302,7 @@ class VoiceLibraryDialog(QtWidgets.QDialog):
         self.render()
         if self.draft and self.draft.rows:
             self.table.setCurrentCell(0, 1)
+        configure_dialog(self, 'library')
 
     def add_button(self, layout, text, callback):
         button = QtWidgets.QPushButton(text)

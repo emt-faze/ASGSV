@@ -101,6 +101,7 @@ def apply_voice_choices(project, choices):
 
 def review_dialog(parent, issues, voices):
     from PySide6 import QtCore, QtWidgets
+    from generator_ui_support import configure_dialog
 
     class ReviewDialog(QtWidgets.QDialog):
         def __init__(self):
@@ -149,6 +150,7 @@ def review_dialog(parent, issues, voices):
             buttons.accepted.connect(self.accept)
             buttons.rejected.connect(self.reject)
             layout.addWidget(buttons)
+            configure_dialog(self, 'review')
 
         def accept(self):
             self.choices = {row.id: combo.currentData() for rows, combo in self.groups

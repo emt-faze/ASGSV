@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6 import QtCore, QtWidgets
+from generator_ui_support import configure_dialog, set_help, BUTTON_HELP
 
 from dialogue_dubbing import voice_paths
 from generator_ocr import OcrCollectionDialog, CollectionWorker
@@ -71,7 +72,6 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         controls = QtWidgets.QHBoxLayout()
         self.pause_button = QtWidgets.QPushButton('暂停自动播放')
         self.pause_button.setCheckable(True)
-        self.pause_button.setToolTip('继续后，从当前字幕对应音频的开头播放。')
         self.pause_button.toggled.connect(self.pause_playback)
         self.skip_button = QtWidgets.QPushButton('跳过当前句')
         self.skip_button.clicked.connect(lambda: self.controller.skip() if self.controller else None)
@@ -90,6 +90,7 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         self.monitor.timeout.connect(self.monitor_playback)
         self.monitor.start(50)
         self.update_count()
+        configure_dialog(self, 'playback')
 
     def busy(self):
         return super().busy() or bool(self.controller and self.controller.alive)
@@ -189,6 +190,7 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
 
     def pause_playback(self, paused):
         self.pause_button.setText('继续自动播放' if paused else '暂停自动播放')
+        set_help(self.pause_button, BUTTON_HELP['playback'][self.pause_button.text()])
         if self.controller:
             self.controller.pause(paused)
 
@@ -214,6 +216,7 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
             self.pause_button.blockSignals(True)
             self.pause_button.setChecked(False)
             self.pause_button.setText('暂停自动播放')
+            set_help(self.pause_button, BUTTON_HELP['playback'][self.pause_button.text()])
             self.pause_button.blockSignals(False)
             if self.status.text() == '正在停止识别和播放…':
                 self.status.setText('识别和播放已停止，可以返回台词列表或重新开始。')

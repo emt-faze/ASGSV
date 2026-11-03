@@ -88,6 +88,7 @@ class GeneratorReleaseTests(unittest.TestCase):
         names={p.relative_to(ROOT).as_posix() for p in build_generator_release.source_files(ROOT)}
         self.assertIn('打开台词生成工具.bat',names)
         self.assertIn('nte-dialogue-ocr/dialogue_generator_ui.py',names)
+        self.assertIn('nte-dialogue-ocr/generator_ui_support.py',names)
         self.assertIn('local-voice-model/qwen_server.py',names)
         self.assertIn('nte-dialogue-ocr/dialogue_export.py',names)
         self.assertIn('nte-dialogue-ocr/voice_library_ui.py',names)

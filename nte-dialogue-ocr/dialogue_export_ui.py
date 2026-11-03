@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 from dialogue_export import DialogueExportTask, ExportCancelled, FORMATS
+from generator_ui_support import configure_dialog, set_help
 
 
 class ExportWorker(QtCore.QThread):
@@ -71,6 +72,9 @@ class DialogueExportDialog(QtWidgets.QDialog):
             buttons.addWidget(button)
         layout.addLayout(buttons)
         self.refresh()
+        configure_dialog(self, 'export')
+        set_help(self.scope, '选择导出整个列表，或只导出主窗口左侧打勾的台词。\n高亮的当前行不决定导出范围。', '导出范围')
+        set_help(self.format, 'TXT 适合阅读；CSV 可用 Excel 打开；ZIP 同时包含文字清单和已有有效配音。\n需要把配音一起带到另一台电脑时请选择 ZIP。', '文件格式')
 
     def busy(self):
         return bool(self.worker and self.worker.isRunning())

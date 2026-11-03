@@ -95,6 +95,7 @@ class PlaybackMetrics:
 
 def show_metrics(parent, metrics):
     from PySide6 import QtCore, QtGui, QtWidgets
+    from generator_ui_support import configure_dialog
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("本次播放延迟统计")
     dialog.resize(920, 570)
@@ -131,4 +132,5 @@ def show_metrics(parent, metrics):
     folder.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(metrics.path.parent))))
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
+    configure_dialog(dialog, 'metrics')
     dialog.exec()
