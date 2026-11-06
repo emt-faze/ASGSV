@@ -40,29 +40,79 @@ DIALOG_STYLE = """
     QWidget:disabled { color:#59697b; }
     QPushButton {
         color:#172c43; background:#eef2f6; border:1px solid #aebac8;
-        border-radius:3px; padding:6px 10px;
+        border-radius:4px; padding:7px 14px; font-size:10pt;
     }
     QPushButton:hover { background:#e3eeed; border-color:#167d77; }
     QPushButton:pressed { background:#d4e6e4; }
-    QPushButton:focus { border-color:#167d77; }
+    QPushButton:focus { border-color:#167d77; outline:none; }
     QPushButton:disabled { color:#59697b; background:#edf0f4; border-color:#c4ccd6; }
-    QLineEdit, QPlainTextEdit, QComboBox, QAbstractSpinBox {
-        padding:4px; color:#172c43; background:white;
+    QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QAbstractSpinBox {
+        padding:5px; color:#172c43; background:white;
+        border:1px solid #c4ccd6; border-radius:3px;
         selection-color:white; selection-background-color:#167d77;
+    }
+    QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QComboBox:focus, QAbstractSpinBox:focus {
+        border-color:#167d77;
     }
     QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled, QAbstractSpinBox:disabled {
         color:#59697b; background:#edf0f4;
     }
     QTableWidget {
-        background:white; alternate-background-color:#f0f4f8; gridline-color:#e6eaf0;
+        background:white; alternate-background-color:#f7f9fb; gridline-color:#e6eaf0;
         selection-color:white; selection-background-color:#167d77;
+        border:1px solid #dce2ea; border-radius:4px;
     }
-    QHeaderView::section { background:#e9eef4; color:#172c43; padding:7px; border:0; }
-    QPushButton#primary { background:#167d77; color:white; font-weight:600; border-radius:4px; }
+    QHeaderView::section {
+        background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #f0f3f7,stop:1 #e4e9f0);
+        color:#172c43; padding:8px 6px; border:none; border-right:1px solid #dce2ea;
+        font-weight:500;
+    }
+    QGroupBox {
+        font-weight:600; font-size:10pt; color:#172c43;
+        border:1px solid #dce2ea; border-radius:6px;
+        margin-top:10px; padding:16px 12px 10px 12px;
+    }
+    QGroupBox::title {
+        subcontrol-origin:margin; subcontrol-position:top left;
+        padding:2px 10px; color:#167d77;
+    }
+    QProgressBar {
+        border:1px solid #c4ccd6; border-radius:5px; background:#edf0f4;
+        text-align:center; color:#172c43; font-size:9pt;
+    }
+    QProgressBar::chunk {
+        background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #1a9e96,stop:1 #167d77);
+        border-radius:4px;
+    }
+    QPushButton#primary {
+        background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #1a9e96,stop:1 #167d77);
+        color:white; font-weight:600; border:none; border-radius:5px;
+        padding:8px 20px; font-size:10pt;
+    }
     QPushButton#primary:hover { background:#126d66; }
     QPushButton#primary:pressed { background:#105e58; }
     QPushButton#primary:disabled { background:#d4e6e4; color:#52647a; }
-    QToolTip { background:#fffbe8; color:#172c43; border:1px solid #b8c4d1; padding:7px; }
+    QPushButton#danger { color:#b33e35; border-color:#d9a8a5; }
+    QPushButton#danger:hover { background:#fdf0ef; border-color:#b33e35; }
+    QPushButton#danger:pressed { background:#f8dbd8; }
+    QSplitter::handle { background:#e0e5ec; }
+    QSplitter::handle:vertical { height:5px; }
+    QToolTip { background:#fffbe8; color:#172c43; border:1px solid #b8c4d1; padding:8px; border-radius:3px; }
+    QLabel#sectionTitle {
+        font-size:11pt; font-weight:600; color:#172c43;
+        padding:4px 0px;
+    }
+    QLabel#sectionNote {
+        color:#52647a; font-size:9pt; padding:0px 0px 2px 0px;
+    }
+    QLabel#statusBar {
+        background:#eef6f5; border:1px solid #c8ddd9; border-radius:5px;
+        padding:8px 12px; color:#172c43; font-size:10pt;
+    }
+    QLabel#countLabel {
+        background:#f0f4f8; border:1px solid #dce2ea; border-radius:4px;
+        padding:6px 10px; color:#3a5068; font-size:9pt;
+    }
 """
 
 
@@ -88,8 +138,13 @@ def set_help(widget, text, title=None):
 def apply_button_help(dialog, group):
     descriptions = BUTTON_HELP[group]
     for button in dialog.findChildren(QtWidgets.QPushButton):
-        if button.text() in descriptions:
-            set_help(button, descriptions[button.text()])
+        raw_text = button.text()
+        if raw_text in descriptions:
+            set_help(button, descriptions[raw_text])
+            continue
+        clean_text = raw_text.lstrip("🎯▶🎙📚⚙📤🖼⏹🔊 ").strip().replace('&', '')
+        if clean_text in descriptions:
+            set_help(button, descriptions[clean_text], title=clean_text)
 
 
 def configure_dialog(dialog, group):

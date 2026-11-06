@@ -1,6 +1,6 @@
 # 异环 · 台词生成与自动播放工具
 
-**台词生成工具 v0.4.12 · 2026-11-03 · 深色主题显示修复与按钮悬停说明**
+**台词生成工具 v0.4.13 · 2026-11-06 · 图形界面重构与体验优化**
 
 在本机完成“采集台词 → 核对角色声线 → 批量生成 → 试听 → 游戏内识别字幕并播放”。提前生成完整音频，游戏中匹配成功后直接播放；支持切句中断、暂停、跳过、重播和窗口最小化。
 
@@ -8,12 +8,11 @@
 
 | 下载 | 内容 |
 | --- | --- |
-| **[Windows 推荐包：含 OCR 模型](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.12/dialogue-generator-v0.4.12-windows-with-ocr-models.zip)** | 完整程序源码、安装入口、四个固定版本 OCR 模型 |
-| **[v0.4.11 界面升级补丁](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.12/dialogue-generator-v0.4.12-ui-update.zip)** | 已安装 v0.4.11 时使用；自动备份旧代码，保留配置、项目与声线 |
-| [源码与安装包](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.12/dialogue-generator-v0.4.12-source.zip) | 同样的程序与文档，OCR 模型在安装时下载 |
-| [SHA-256 校验文件](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.12/SHA256SUMS.txt) | 核对下载完整性 |
+| **[Windows 推荐包：含 OCR 模型](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.13/dialogue-generator-v0.4.13-windows-with-ocr-models.zip)** | 完整程序源码、安装入口、四个固定版本 OCR 模型 |
+| [源码与安装包](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.13/dialogue-generator-v0.4.13-source.zip) | 同样的程序与文档，OCR 模型在安装时下载 |
+| [SHA-256 校验文件](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.13/SHA256SUMS.txt) | 核对下载完整性 |
 
-[完整发布页](https://github.com/emt-faze/ASGSV/releases/tag/dialogue-generator-v0.4.12) · [使用与迁移指南](docs/台词生成工具使用指南.md) · [验证记录](docs/台词生成工具验证记录.md)
+[完整发布页](https://github.com/emt-faze/ASGSV/releases/tag/dialogue-generator-v0.4.13) · [使用与迁移指南](docs/台词生成工具使用指南.md) · [验证记录](docs/台词生成工具验证记录.md)
 
 两个包均不包含 Python、已安装环境、TTS 模型权重或个人声线与项目。首次安装仍需联网；角色模型另行下载约 2.52 GB。带模型包中的“模型”指 OCR 识别模型。
 
@@ -29,11 +28,25 @@
 
 首次使用需校准游戏区域。系统模式要求 Windows 有中文朗读声音；角色模型要求支持 CUDA 的 NVIDIA 显卡和驱动，建议完整安装预留至少 15 GB 空间。自动播放已准备好的音频不需要加载 TTS 模型。
 
-## v0.4.12 新增与改进
+## v0.4.13 新增与改进
+
+- **布局结构重组与空间优化**：将“新建项目”、“打开项目…”与“打开输出文件夹”整合至顶部标题栏右侧，释放更多垂直展示面积。
+- **功能分组与视觉指引**：连接工具与导入项归类整合至卡片化布局，划分为“游戏识别与播放”和“台词导入与管理”两层并配以清晰的分隔线。
+- **工作区分隔条（QSplitter）**：台词表格与当前行编辑器之间引入上下可自由拖动调整的分隔条，便于在查阅长篇台词列表与精细编辑单行文字间灵活切换。
+- **表格色彩与状态对齐规范**：
+  - 角色、核对情况、生成结果与匹配来源等列统一居中对齐；
+  - 生成结果以森林绿（已完成）、醒目红（失败）、科技蓝（生成中）多色高亮标识；
+  - 人工已确认项应用品牌青色高亮，待核对项保持琥珀橙；删除操作配置危险警告色。
+- **主操作视觉聚焦与交互细节**：
+  - “生成 / 继续勾选项”应用大尺寸渐变青色聚焦设计；
+  - 进度条支持 `%v / %m` 数值比例展示；
+  - 状态栏升级为柔和浅青色卡片底色；
+  - 细化全局浅色主题样式与 Windows 字体渲染，确保各显示比例下排版舒适清晰。
+
+## v0.4.12 已有功能
 
 - **深色主题显示修复**：窗口、按钮、表头、输入框、选中和禁用状态采用一致的浅色配色，避免白字落在浅色背景上；子窗口和运行中切换主题也纳入检查。
 - **按钮悬停说明**：鼠标停留片刻即可查看作用、处理范围和使用条件；覆盖声线、视频、导出与识别播放等窗口，暂停/继续、试听/停止的提示随状态更新。
-- **保留数据的升级补丁**：已装 v0.4.11 的用户可下载小补丁，无需重新安装模型；关闭工具后把 `ui-update` 放进 `nte-dialogue-ocr`，双击其中的 `双击更新界面.bat`。补丁先备份，遇到不同版本或已修改的文件会停止。
 
 “当前行”是高亮的一行，“勾选项”是左侧打勾的条目。另一台电脑若显示“共 0 条”，需要打开或导入项目；仅更新程序不会同步个人台词和声线。窗口标题栏仍可能随系统设置而异。
 
