@@ -1,6 +1,7 @@
 from pathlib import Path
 from contextlib import ExitStack
 import threading
+import tempfile
 import unittest
 from unittest.mock import Mock, call, patch
 
@@ -230,6 +231,15 @@ class CaptureReconnectTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
+    def setUp(self):
+        # Each test owns its report root; coarse Windows timestamps otherwise
+        # collide across fast tests and leave artifacts in the live installation.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = patch.object(launch, 'ROOT', Path(folder.name))
+        root.start()
+        self.addCleanup(root.stop)
+
     def test_restored_launcher_uses_current_client_size_for_start_click(self):
         # A minimized window is discovered using its normal outer rectangle;
         # once restored, clicks must use its smaller, current client rectangle.

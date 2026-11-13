@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/KamikoshiSorawo/ww-log-decryptor",
+  "commit": "3b8e6a2c53a9a1132dfd9ab5d659c79b5894c6d5",
+  "files": {
+    "decrypt_log.py": "b7dd0a81aab8405ddffb6ccffd5b3edf1a7f02df288bf4967493e427523fcc44",
+    "LICENSE": "6fc168ca13fb7da2564921a02c6c473569ea1dc8ce89bb3af549c718080b26f2"
+  }
+}

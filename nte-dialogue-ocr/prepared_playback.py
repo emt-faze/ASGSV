@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import math
 import re
 from pathlib import Path
@@ -35,6 +36,9 @@ class PreparedLine:
     path: Path
     sha256: str
     character_voice: bool
+    catalog_id: str = ''
+    binding_voice: str = ''
+    cloud_voice: str = ''
 
     @property
     def identity(self):
@@ -43,23 +47,36 @@ class PreparedLine:
 
 class PreparedLibrary:
     def __init__(self, project, aliases=None):
+        self.game_id = getattr(project, 'game_id', 'nte')
         self.aliases = dict(aliases or {})
         self.lines, self.by_text = [], {}
         self.by_prefix, self.known_prefixes = {}, {}
         self.known_texts = set()
+        self.guards = []
+        if self.game_id == 'wuwa':
+            payload = json.loads((project.directory / 'playback-guards.json').read_text(encoding='utf-8'))
+            if payload.get('game_id') != 'wuwa':
+                raise ValueError('鸣潮播放排除索引缺失或属于另一游戏')
+            self.guards = payload['lines']
+            for guard in self.guards:
+                canonical = prefix_text(guard['text'])
+                self.known_texts.add(canonical)
+                if len(canonical) >= 5:
+                    self.known_prefixes.setdefault(canonical[:5], set()).add((canonical, self.role_key(guard['speaker']), guard['id']))
         self.excluded = 0
         for row in project.rows:
             canonical = prefix_text(row.text)
             self.known_texts.add(canonical)
             if len(canonical) >= 5:
-                known = (canonical, self.role_key(row.speaker), row.voice)
+                known = (canonical, self.role_key(row.speaker), row.source_id if self.game_id == 'wuwa' else row.voice)
                 self.known_prefixes.setdefault(canonical[:5], set()).add(known)
             path = project.audio_path(row) if row.status == 'done' and not row.review_reason() else None
             if path is None:
                 self.excluded += 1
                 continue
             line = PreparedLine(row.id, row.text, row.speaker, row.audio.get('voice', ''), path,
-                                row.audio['sha256'], project.mode == 'character')
+                                row.audio['sha256'], project.mode == 'character' and not row.voice.startswith('system:'),
+                                row.evidence.get('catalog_id',''), row.voice)
             self.lines.append(line)
             self.by_text.setdefault(text_key(row.text), []).append(line)
             if len(canonical) >= 5:
@@ -87,14 +104,25 @@ class PreparedLibrary:
         return missing
 
     def match(self, text, speaker=''):
+        if self.game_id == 'wuwa':
+            guards = [g for g in self.guards if text_key(g['text']) == text_key(text)]
+            role = self.role_key(speaker)
+            if role:
+                guards = [g for g in guards if self.role_key(g['speaker']) == role]
+            if any(g['voice_status'] != 'unvoiced' for g in guards):
+                return None, '同文候选包含有原声或未知条目，禁止猜测播放'
+            if not role and len({self.role_key(g['speaker']) for g in guards}) > 1:
+                return None, '同文不同角色，等待角色名'
         choices = self.by_text.get(text_key(text), [])
         if not choices:
             return None, '当前项目没有这句的完整音频'
         role = self.role_key(speaker)
+        if self.game_id == 'wuwa' and not role and len({self.role_key(line.speaker) for line in choices}) > 1:
+            return None, '同文不同角色，等待角色名'
         if role:
             # Explicit character voice assignments can correct an OCR role name.
             # They also distinguish duplicate text spoken by different characters.
-            voices = [line for line in choices if line.character_voice and self.role_key(line.voice) == role]
+            voices = [line for line in choices if self.game_id != 'wuwa' and line.character_voice and self.role_key(line.voice) == role]
             choices = voices or [line for line in choices if self.role_key(line.speaker) == role]
             if not choices:
                 return None, '台词相同，但角色不对应，等待角色名识别稳定'
@@ -120,7 +148,7 @@ class PreparedLibrary:
         if not prefix_text(line.text).startswith(canonical):
             return None, '已识别后文与候选台词不符，已停止提前播放', 'conflict'
         role = self.role_key(speaker)
-        expected_role = line.voice if line.character_voice else line.speaker
+        expected_role = line.voice if line.character_voice and self.game_id != 'wuwa' else line.speaker
         if role and role != self.role_key(expected_role):
             return None, '前五字符匹配，但角色不对应，等待角色名稳定', 'conflict'
         return line, '', 'prefix'
@@ -129,9 +157,11 @@ class PreparedLibrary:
 class PreparedPlayback:
     """One audio owner, one replaceable pending line, no synthesis dependency."""
     def __init__(self, library, player, callback=lambda event: None, *, clock=time.monotonic,
-                 max_age=2.5, confirmations=2):
+                 max_age=2.5, confirmations=2, allow_prefix=True, preserve_on_unavailable=False):
         self.library, self.player, self.callback = library, player, callback
         self.clock, self.max_age, self.confirmations = clock, max_age, confirmations
+        self.allow_prefix=allow_prefix
+        self.preserve_on_unavailable=preserve_on_unavailable
         self._condition = threading.Condition(threading.RLock())
         self._closed = self._paused = False
         self._pending = self._active = None
@@ -181,18 +211,20 @@ class PreparedPlayback:
             if captured_at is not None and captured_at <= self._minimum_capture:
                 return
             was_current = bool(self._current or self._candidate or self._pending or self._active)
-            if unavailable and (self._active or self._pending):
-                self._consumed = None  # Resume only after fresh, confirmed subtitles return.
             self._minimum_capture = max(self._minimum_capture,
                                         self.clock() if captured_at is None else captured_at)
             self._reset_match_locked()
-            self._consumed = None
+            if not (unavailable and self.preserve_on_unavailable):
+                self._consumed = None
             self._blocked_prefixes.clear()
             self._match_kind = ''
             if was_current:
                 self._emit('waiting', '画面暂不可用，已停止播放' if unavailable else '字幕画面已变化，等待新台词')
 
     def observe(self, observation):
+        if observation.get('game_id', 'nte') != getattr(self.library, 'game_id', 'nte'):
+            self.invalidate(unavailable=True)
+            return
         with self._condition:
             if self._closed:
                 return
@@ -236,7 +268,11 @@ class PreparedPlayback:
             except (ValueError, TypeError):
                 speaker_score = 0
             speaker = observation.get('speaker', '') if math.isfinite(speaker_score) and speaker_score >= .9 else ''
-            line, reason, kind = self.library.resolve(observation.get('body'), speaker, early=early)
+            if self.allow_prefix:
+                line, reason, kind = self.library.resolve(observation.get('body'), speaker, early=early)
+            else:
+                line, reason = self.library.match(observation.get('body'),speaker)
+                kind='full' if line is not None else ''
             prefix = prefix_text(observation.get('body'))[:5]
             if kind == 'conflict':
                 self._blocked_prefixes.add(prefix)

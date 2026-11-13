@@ -20,3 +20,7 @@
 - 可选安装入口使用 [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) 1.2.1（MIT）、PyAV 及其依赖。完整许可应以安装包为准。
 - 转写模型 [Systran/faster-whisper-small](https://huggingface.co/Systran/faster-whisper-small) 固定到提交 `536b0662742c02347bc0e980a01041f333bce120`，由安装脚本下载，发布附件不包含其权重。上游 [OpenAI Whisper](https://github.com/openai/whisper) 使用 MIT 许可。
 - 用户上传的 `tools/voice-library` 参考代码保持原样；其来源说明见该目录 README。
+
+## 鸣潮日志与任务语音包
+
+日志解码组件取自 KamikoshiSorawo/ww-log-decryptor，MIT 许可及固定版本信息位于 nte-dialogue-ocr/ww_log_decoder。任务包使用 AI 合成的中文对白，不含训练素材、角色参考录音或模型权重。游戏、角色、剧情和第三方服务的权利仍归各自权利人所有。

@@ -49,6 +49,8 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         self.playback_session = uuid4().hex
         self.metrics = PlaybackMetrics(project.directory)
         super().__init__(root, parent)
+        if self.config.get('game_id', 'nte') != getattr(project, 'game_id', 'nte'):
+            raise ValueError('项目与捕获配置不属于同一游戏')
         self.setWindowTitle('自动识别字幕并播放 · 当前项目')
         self.resize(960, 780)
         self.note.setText('先在项目中生成台词音频。前五字符（含标点）唯一匹配且稳定后提前播放，继续核对后文。\n'
@@ -89,6 +91,13 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         self.monitor = QtCore.QTimer(self)
         self.monitor.timeout.connect(self.monitor_playback)
         self.monitor.start(50)
+        self.hotkeys = None
+        if self.config.get('game_id') == 'wuwa':
+            from wuwa_hotkeys import PlaybackHotkeys
+            self.hotkeys = PlaybackHotkeys(self, self.config.get('hotkeys', {}),
+                {'pause': self.pause_button.click, 'replay': self.replay_button.click, 'skip': self.skip_button.click})
+            if self.hotkeys.errors:
+                self.status.setText('快捷键未注册：' + '、'.join(self.hotkeys.errors))
         self.update_count()
         configure_dialog(self, 'playback')
 
@@ -99,6 +108,17 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
         if self.busy():
             return
         try:
+            if self.config.get('game_id') == 'wuwa':
+                from wuwa_catalog import Catalog
+                from wuwa_resources import inventory
+                inventory(self.config['install_root'], self.root)
+                catalog = Catalog(self.root)
+                try:
+                    catalog.validate_project(self.project)
+                finally:
+                    catalog.close()
+                from wuwa_voices import validate_audio_voices
+                validate_audio_voices(self.project, self.options)
             config, aliases = playback_settings(self.options)
             self.library = PreparedLibrary(self.project, aliases)
             self.update_count()
@@ -148,6 +168,8 @@ class PreparedPlaybackDialog(OcrCollectionDialog):
             self.status.setText('识别已停止：'+event['error'])
             return
         if event.get('capture_state') == 'unavailable':
+            self.controller.invalidate(unavailable=True)
+        if self.config.get('game_id') == 'wuwa' and event.get('capture_state') == 'blank':
             self.controller.invalidate(unavailable=True)
         if 'frame_changed' in event:
             self.controller.invalidate(captured_at=event['frame_changed'])

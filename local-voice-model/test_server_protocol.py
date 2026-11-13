@@ -223,6 +223,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(self.model.prompt_calls, 2)
         self.assertFalse(self.engine.last_metrics["prompt_cache_hit"])
 
+    def test_explicit_variation_seed_is_recorded_and_does_not_change_defaults(self):
+        with patch.object(self.engine.torch, 'manual_seed') as seeded:
+            _, metrics = self.engine.synthesize(self.payload(variation_seed=43))
+        self.assertEqual([call.args[0] for call in seeded.call_args_list], [43])
+        self.assertEqual(metrics['completion_attempts'][0]['seed'], 43)
+        with patch.object(self.engine.torch, 'manual_seed') as seeded:
+            _, metrics = self.engine.synthesize(self.payload())
+        self.assertEqual([call.args[0] for call in seeded.call_args_list], [42])
+        self.assertEqual(metrics['completion_attempts'][0]['seed'], 42)
+
+    def test_invalid_variation_seed_is_rejected_before_generation(self):
+        for value in (True, -1, 2147483648, 1.5, '43', None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.engine.synthesize(self.payload(variation_seed=value))
+        self.assertEqual(self.model.generation_calls, 0)
+
     def test_punctuation_and_all_generated_frames_are_preserved(self):
         # Active final syllables must not be shortened by output processing.
         text = "失误了啊，鉴定师。"
