@@ -87,12 +87,20 @@ class PreparedPlaybackUiTests(unittest.TestCase):
             self.app.processEvents()
             time.sleep(.005)
         self.app.processEvents()
-        self.assertTrue(condition())
+        self.assertTrue(condition(), self.dialog.playback_status.text())
 
     def observe(self, text=None):
+        # Windows' monotonic clock can return the same value for adjacent
+        # simulated frames. Production correctly rejects duplicate captures.
+        while time.monotonic() <= self.dialog.controller._last_capture:
+            self.app.processEvents()
+            time.sleep(.001)
+        captured = time.monotonic()
         self.commands.put(('on_observation', dict(body=text or self.row.text, speaker=self.row.speaker,
-                           body_confidence=.99, speaker_confidence=.99, captured_monotonic=time.monotonic())))
-        time.sleep(.015)
+                           body_confidence=.99, speaker_confidence=.99, captured_monotonic=captured)))
+        # Deliver each simulated frame through Qt before submitting the next;
+        # a fixed sleep does not guarantee worker/GUI progress under CPU load.
+        self.wait(lambda: self.dialog.controller._last_capture >= captured)
 
     def play(self):
         self.dialog.start.click()

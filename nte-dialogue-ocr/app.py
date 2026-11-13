@@ -52,7 +52,7 @@ def check_geometry(frame, config, client_size=None):
 
 def run_loop(window, config, stop, callback, seconds=None, on_capture=None, presentation_queue=None,
              on_record=None, on_state=None, on_session=None, on_observation=None, records_root=None,
-             on_frame_change=None, on_visual_observation=None, on_prefix_observation=None):
+             on_frame_change=None, on_visual_observation=None, on_prefix_observation=None, on_full_frame=None):
     from PySide6.QtCore import QLockFile
     directory = Path(records_root) if records_root is not None else ROOT
     directory.mkdir(parents=True, exist_ok=True)
@@ -63,16 +63,18 @@ def run_loop(window, config, stop, callback, seconds=None, on_capture=None, pres
     try:
         return _run_loop(window, config, stop, callback, seconds, on_capture, presentation_queue,
                          on_record, on_state, on_session, on_observation, directory, on_frame_change, on_visual_observation,
-                         on_prefix_observation)
+                         on_prefix_observation, on_full_frame)
     finally:
         lease.unlock()
 
 
 def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, presentation_queue=None,
               on_record=None, on_state=None, on_session=None, on_observation=None, records_root=None,
-              on_frame_change=None, on_visual_observation=None, on_prefix_observation=None):
+              on_frame_change=None, on_visual_observation=None, on_prefix_observation=None, on_full_frame=None):
     from ocr_engines import make_ocr
     from frame_gate import FrameStability
+    if getattr(window, 'game_id', 'nte') != config.get('game_id', 'nte'):
+        raise ValueError('游戏窗口与当前配置不属于同一游戏')
     if stop.is_set():
         return
     if not config.get("calibrated") or not config.get("body_roi"):
@@ -83,7 +85,9 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
     engine = make_ocr(config)
     if stop.is_set():
         return
-    stability=FrameStability(config.get('render_stable_seconds',.45))
+    stability=FrameStability(config.get('render_stable_seconds',.45),
+                             style='wuwa' if config.get('game_id')=='wuwa' else 'default')
+    fresh_text_mode=config.get('game_id')=='wuwa' and config.get('live_fresh_text') is True
     from prefix_preview import PrefixPreview
     prefix_preview=PrefixPreview() if on_prefix_observation else None
     recorder = Recorder(records_root if records_root is not None else ROOT, engine.session_id)
@@ -91,7 +95,8 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
         on_session(recorder.directory)
     capture = CaptureSession(window, backend=config.get("capture_backend", "wgc"),
                              interval_ms=round(1000/config.get("capture_fps", 5)),
-                             rois=[config["body_roi"], config.get("speaker_roi")],
+                             rois=None if on_full_frame else [config["body_roi"], config.get("speaker_roi")] +
+                                  ([[.81,.025,.96,.095]] if config.get('game_id') == 'wuwa' and config.get('scene_guard_enabled') else []),
                              require_foreground=not (config.get("capture_backend", "wgc") == "wgc"
                                                     and config.get("wgc_background", False))).start()
     if on_capture:
@@ -125,6 +130,7 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
                 resource_at=now
             if publication is not None:
                 event, evidence = publication
+                event['game_id'] = config.get('game_id', 'nte')
                 callback({"event": event, "status_text": "识别中 · "+STATUS_LABELS[event["status"]]})
                 record = recorder.upsert(event, evidence)
                 if on_record and not stop.is_set():
@@ -155,9 +161,30 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
                 stop.wait(.03)
                 continue
             last_sequence = packet.sequence
+            if on_full_frame and on_full_frame(packet, engine) is False:
+                if on_state:
+                    on_state('blank')
+                engine.pause(now=now)
+                stability.reset()
+                if prefix_preview:
+                    prefix_preview.reset()
+                continue
             check_geometry(packet.image, config, packet.client_size)
+            if not on_full_frame and config.get('game_id') == 'wuwa' and config.get('scene_guard_enabled'):
+                from wuwa_scene import dialogue_controls
+                if not dialogue_controls(packet.image, records_root, packet.client_size, packet.origin):
+                    if on_state:
+                        on_state('unavailable')
+                    engine.pause(now=now)
+                    stability.reset()
+                    if prefix_preview:
+                        prefix_preview.reset()
+                    if now-status_at >= .5:
+                        callback({'status_text':'已暂停：未识别鸣潮对话界面'})
+                        status_at=now
+                    continue
             body,body_offset=engine.region_image(packet.image,engine.body_roi,packet.client_size,packet.origin)
-            if not stability.ready(body,packet.captured_at):
+            if not fresh_text_mode and not stability.ready(body,packet.captured_at):
                 if prefix_preview:
                     early=prefix_preview.read(engine,packet,body,body_offset,capture)
                     if early and not stop.is_set():
@@ -170,22 +197,28 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
                 continue
             if prefix_preview:
                 prefix_preview.reset()
-            if on_frame_change and not stability.unchanged:
+            if on_frame_change and not fresh_text_mode and not stability.unchanged:
                 # Stop old prepared audio before OCR spends time reading the
                 # new stable glyphs. Revision callbacks may refer to old pages.
                 on_frame_change(packet.captured_at)
             result = engine.process_frame(packet.image, now=now, client_size=packet.client_size,
                                           origin=packet.origin, captured_at=packet.captured_at,
-                                          reuse_body=stability.unchanged)
+                                          reuse_body=stability.unchanged and config.get('game_id')!='wuwa',
+                                          preview=True if fresh_text_mode else False)
+            if fresh_text_mode and result.get('observation'):
+                # Live WuWa confirms complete recognized text on two distinct
+                # captures. Never let animated scenery block OCR or reuse words.
+                result['observation']=dict(result['observation'],prefix_probe=False,render_stable=False)
             stability.commit()
             if on_visual_observation and result.get('observation'):
                 on_visual_observation(body,result['observation'],body_offset)
             if on_state and result["status"] == "blank":
                 on_state("blank")
             if on_observation and result.get("observation"):
-                on_observation(dict(result["observation"], render_stable=True))
+                on_observation(dict(result["observation"], render_stable=not fresh_text_mode))
             event = result.get("event")
             if event:
+                event['game_id'] = config.get('game_id', 'nte')
                 event["capture_backend"] = capture.backend_name
                 event["source_kind"] = "live_game_capture"
                 event["transparent_overlays"] = list(packet.transparent_overlays)
@@ -206,6 +239,7 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
         try:
             if publication is not None:
                 event, evidence = publication
+                event['game_id'] = config.get('game_id', 'nte')
                 recorder.upsert(event, evidence)
         finally:
             capture.stop()

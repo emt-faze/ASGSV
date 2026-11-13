@@ -235,14 +235,15 @@ class VoiceEngine:
                 # Recovery only affects attempts that formerly failed. Keep the
                 # successful-output identity stable so valid cached audio survives.
                 "completion_recovery": dict(RECOVERY_POLICY),
+                "supports_variation_seed": True,
                 "last_failure": getattr(self, "last_failure", None)}
 
-    def generate_complete(self, text, language, prompt):
+    def generate_complete(self, text, language, prompt, seed=42):
         budget = speech_token_budget(text)
         retry_budget = min(1024, max(96, math.ceil(budget * RECOVERY_POLICY['retry_budget_multiplier'])))
         attempts = []
         self.generation_deadline = time.monotonic() + RECOVERY_POLICY['request_timeout_seconds']
-        for number, (seed, penalty, allowance) in enumerate(((42, 1.0, budget),
+        for number, (seed, penalty, allowance) in enumerate(((seed, 1.0, budget),
                 (RECOVERY_POLICY['retry_seed'], RECOVERY_POLICY['retry_repetition_penalty'], retry_budget)), 1):
             if self.cancel_event.is_set():
                 raise RuntimeError("本句生成已取消")
@@ -303,6 +304,9 @@ class VoiceEngine:
             if not prompt:
                 raise ValueError("请填写参考音频中实际说出的文字。")
             speed = float(payload.get("speed", 1.0))
+            seed = payload.get('variation_seed', 42)
+            if type(seed) is not int or not 0 <= seed <= 2147483647:
+                raise ValueError('variation_seed must be an integer between 0 and 2147483647')
             if not math.isfinite(speed) or not 0.5 <= speed <= 2.0:
                 raise ValueError("语速须为 0.5 到 2.0。")
             info = sf.info(str(ref))
@@ -336,7 +340,7 @@ class VoiceEngine:
                 raise RuntimeError("本句生成已取消")
             if self.device.startswith("cuda"):
                 torch.cuda.reset_peak_memory_stats()
-            torch.manual_seed(42)
+            torch.manual_seed(seed)
             with timer.phase("ref_encode"):
                 identity = json.dumps(self.inference, sort_keys=True).encode("utf-8")
                 key = hashlib.sha256(ref.read_bytes() + prompt.encode("utf-8") + identity).hexdigest()
@@ -353,7 +357,7 @@ class VoiceEngine:
             if cancellation.is_set():
                 raise RuntimeError("本句生成已取消")
             with timer.phase("infer"), torch.inference_mode():
-                wavs, sr, attempts = self.generate_complete(text, language, self.prompts[key])
+                wavs, sr, attempts = self.generate_complete(text, language, self.prompts[key], seed=seed)
             if cancellation.is_set():
                 raise RuntimeError("本句生成已取消")
             with timer.phase("wav_write"):

@@ -52,3 +52,7 @@ nte-dialogue-ocr/assets/ocr-v6/*.onnx
 **/voice-library-drafts/
 **/voice-library-runtime.json
 **/voice-library-source.json
+
+# Per-installation game catalogs, session state and generated audio
+/game-data/
+/ASGSV.exe

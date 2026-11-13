@@ -78,7 +78,7 @@ class VoiceRuntime:
         if self.fallback_enabled and self.config.tts_backend == "qwen3-tts":
             self.client.timeout = max(10, min(150, float(options.get("wait_seconds", 40))))
         self.player = AudioPlayer(self.config.output_device, volume=self.config.output_volume)
-        self.cache_dir = self.data_root / "cache"
+        self.cache_dir = Path(options['cache_root']) if options.get('cache_root') else self.data_root / "cache"
 
     def model_root(self):
         runtime = self.data_root / "model_runtime.json"

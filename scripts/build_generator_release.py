@@ -29,6 +29,12 @@ def source_files(root=ROOT):
     selected.update(p for p in (root/'tools/voice-library').rglob('*')
                     if p.is_file() and p.suffix in {'.py','.md'} and '__pycache__' not in p.parts)
     selected.add(ocr/'validation/README.md')
+    selected.update(ocr/'ww_log_decoder'/name for name in ('decoder.py','LICENSE','source.json'))
+    selected.update(root/name for name in ('launcher-source/Launcher.cs','launcher-source/build.ps1',
+                                          'tools/launcher_button.ps1','安装鸣潮日志配音.bat',
+                                          'tools/speech-cleanup/studio_clean.py',
+                                          'tools/speech-cleanup/vendor/nara_wpe-0.0.11-py3-none-any.whl',
+                                          'tools/speech-cleanup/vendor/nara_wpe-0.0.11-py3-none-any.provenance.json'))
     forbidden = {'.git','.venv','data','records','generation-projects','runtime-logs','__pycache__','reference','backups',
                  'voice-library-drafts','asr-runtime'}
     for p in selected:

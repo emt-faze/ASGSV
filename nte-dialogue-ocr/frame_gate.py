@@ -3,9 +3,10 @@ import cv2
 import numpy as np
 from collections import deque
 
-def glyph_mask(image):
+def glyph_mask(image, *, style='default'):
     lower=image.min(axis=2)
-    white=(lower>245)&(image.max(axis=2).astype(np.int16)-lower<12)
+    floor,spread=(205,50) if style=='wuwa' else (245,12)
+    white=(lower>floor)&(image.max(axis=2).astype(np.int16)-lower<spread)
     dark=cv2.dilate((cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)<140).astype(np.uint8),np.ones((5,5),np.uint8))
     ink=(white & (dark>0)).astype(np.uint8)
     count,labels,stats,_=cv2.connectedComponentsWithStats(ink,8)
@@ -14,7 +15,7 @@ def glyph_mask(image):
     return keep[labels]
 
 
-def soft_glyph_mask(image):
+def soft_glyph_mask(image, *, style='default'):
     """A photometric envelope, without spatial dilation of the glyph itself.
 
     Core pixels may flicker within their existing antialiased edge without
@@ -24,13 +25,16 @@ def soft_glyph_mask(image):
     if image.ndim==2:
         return image.astype(bool)
     lower=image.min(axis=2)
-    white=(lower>205)&(image.max(axis=2).astype(np.int16)-lower<40)
+    floor,spread=(175,70) if style=='wuwa' else (205,40)
+    white=(lower>floor)&(image.max(axis=2).astype(np.int16)-lower<spread)
     dark=cv2.dilate((cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)<140).astype(np.uint8),np.ones((5,5),np.uint8))
     return white & (dark>0)
 
 class FrameStability:
-    def __init__(self,seconds=.45):
+    def __init__(self,seconds=.45, *, style='default'):
         self.seconds=seconds
+        self.mask=lambda image:glyph_mask(image,style=style) if style!='default' else glyph_mask(image)
+        self.soft=lambda image:soft_glyph_mask(image,style=style) if style!='default' else soft_glyph_mask(image)
         self.reset()
 
     def reset(self):
@@ -40,10 +44,10 @@ class FrameStability:
         self.unchanged=False
 
     def ready(self,image,now):
-        mask=glyph_mask(image)
+        mask=self.mask(image)
         if self.history and mask.shape!=self.history[-1][1].shape:
             self.reset()
-        self.history.append((now,mask,soft_glyph_mask(image)))
+        self.history.append((now,mask,self.soft(image)))
         self.unchanged=False
         if len(self.history)<3 or now-self.history[0][0]<self.seconds:
             return False
@@ -68,7 +72,9 @@ class FrameStability:
             before_ink,before_background=self.template
             # A persistent changed pixel is a new glyph pattern. There is no
             # edit-distance/text-similarity threshold, even for one letter.
-            self.unchanged=not (np.any(sure_ink & before_background) or np.any(stable_background & before_ink))
+            # Two empty masks are not evidence of identical text. In particular,
+            # warm game subtitles must never reuse stale OCR after a missed mask.
+            self.unchanged=bool(np.any(sure_ink) and np.any(before_ink)) and not (np.any(sure_ink & before_background) or np.any(stable_background & before_ink))
         return True
 
     def commit(self):
@@ -83,7 +89,9 @@ class SubtitleChangeGuard:
     Smaller changes require two captured frames. OCR still decides which new
     sentence to play; this guard can only stop an obsolete one.
     """
-    def __init__(self):
+    def __init__(self, *, style='default'):
+        self.mask=lambda image:glyph_mask(image,style=style) if style!='default' else glyph_mask(image)
+        self.soft=lambda image:soft_glyph_mask(image,style=style) if style!='default' else soft_glyph_mask(image)
         self.reference = None
         self.body = ''
         self.minimum_capture = -float('inf')
@@ -120,7 +128,7 @@ class SubtitleChangeGuard:
             x0,y0=np.maximum(0,np.floor(points.min(axis=0)).astype(int)-1)
             x1,y1=np.minimum(image.shape[1::-1],np.ceil(points.max(axis=0)).astype(int)+2)
             region[y0:y1,x0:x1]=True
-        ink=glyph_mask(image)&region
+        ink=self.mask(image)&region
         if ink.sum()<8:
             return
         if growing:
@@ -137,7 +145,7 @@ class SubtitleChangeGuard:
                     tight[y0:y1,x0+int(xs.min()):x0+int(xs.max())+1]=True
             region=tight
             ink=ink&region
-        self.reference=(ink,soft_glyph_mask(image),region,float(captured))
+        self.reference=(ink,self.soft(image),region,float(captured))
         self.body,self.count=body,0
         self.allow_growth = growing
         self.anchor = None
@@ -159,8 +167,8 @@ class SubtitleChangeGuard:
         if self.reference is None or image.shape[:2] != self.reference[0].shape:
             return False
         ink,soft,region,_=self.reference
-        current=glyph_mask(image)
-        current_soft=soft_glyph_mask(image)
+        current=self.mask(image)
+        current_soft=self.soft(image)
         limit=max(8,round(int(ink.sum())*.025))
         if max(int((ink&~current_soft).sum()),int((current&~soft&region).sum()))<limit:
             return True
@@ -193,8 +201,8 @@ class SubtitleChangeGuard:
         if image.shape[:2]!=ink.shape:
             changed=True
         else:
-            removed=int((ink&~soft_glyph_mask(image)).sum())
-            added=int((glyph_mask(image)&~soft&region).sum())
+            removed=int((ink&~self.soft(image)).sum())
+            added=int((self.mask(image)&~soft&region).sum())
             significant=max(8,round(int(ink.sum())*.025))
             self.count=self.count+1 if max(removed,added)>=significant else 0
             changed=(removed>=max(8,int(ink.sum())*.55) or self.count>=2)

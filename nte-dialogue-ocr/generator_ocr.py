@@ -20,6 +20,10 @@ def save_ocr_settings(root, updates):
     # Refresh before patching; never overwrite voice or unrelated settings.
     config = json.loads(path.read_text(encoding="utf-8-sig"))
     config.update(updates)
+    if config.get('game_id') == 'wuwa' and config.get('calibrated'):
+        size = config.get('reference_size', [1920, 1080])
+        config.setdefault('calibration_profiles', {})[f'{size[0]}x{size[1]}'] = {
+            k:config.get(k) for k in ('body_roi','speaker_roi','reference_size','calibrated')}
     atomic_text(path, json.dumps(config, ensure_ascii=False, indent=2))
     return config
 
@@ -70,7 +74,7 @@ class CollectionWorker(QtCore.QThread):
                       'review_coverage_warning','render_stable','prefix_probe','prefix_stable',
                       'prefix_confirmed_at','recognized_capture')
             self.message.emit({'prefix_observation' if early else 'observation':
-                               {key:value.get(key) for key in fields}})
+                               dict({key:value.get(key) for key in fields}, game_id=self.config.get('game_id', 'nte'))})
         try:
             hooks = {}
             if self.playback_events:
@@ -102,7 +106,7 @@ class PlaybackFrameWatch:
         from frame_gate import SubtitleChangeGuard
         self.capture, self.config, self.callback = capture, config, callback
         self.stop = threading.Event()
-        self.guard = SubtitleChangeGuard()
+        self.guard = SubtitleChangeGuard(style='wuwa' if config.get('game_id')=='wuwa' else 'default')
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self.run, name='prepared-frame-watch', daemon=True)
 
@@ -135,6 +139,15 @@ class PlaybackFrameWatch:
                         self.guard.reset()
                 elif packet.sequence > sequence:
                     available, sequence = True, packet.sequence
+                    if self.config.get('game_id') == 'wuwa' and self.config.get('scene_guard_enabled'):
+                        from wuwa_scene import dialogue_controls
+                        from game_profiles import WUWA_ROOT
+                        if not dialogue_controls(packet.image, self.config.get('data_root', WUWA_ROOT), packet.client_size, packet.origin):
+                            self.callback({'capture_state':'unavailable'})
+                            with self.lock:
+                                self.guard.reset()
+                            self.stop.wait(.05)
+                            continue
                     width, height = packet.client_size
                     left, top, right, bottom = roi_to_pixels((height, width), self.config['body_roi'])
                     x, y = packet.origin
@@ -316,7 +329,9 @@ class OcrCollectionDialog(QtWidgets.QDialog):
             return
         current = self.windows.currentData()
         self.windows.clear()
-        for window in list_game_windows():
+        discovery = (dict(game_id='wuwa', install_root=self.config['install_root'])
+                     if self.config.get('game_id') == 'wuwa' else {})
+        for window in list_game_windows(**discovery):
             if not window.is_launcher:
                 self.windows.addItem(f"{window.title.strip()} · {window.width}×{window.height}", window)
                 if current and window.hwnd == current.hwnd:

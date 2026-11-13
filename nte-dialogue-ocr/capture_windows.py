@@ -58,7 +58,12 @@ def _window_process(hwnd):
     return pid, _query_process_path(pid)
 
 
-def _window_kind(process_path, class_name):
+def _window_kind(process_path, class_name, game_id='nte', install_root=''):
+    if game_id == 'wuwa':
+        from game_profiles import wuwa_window_kind
+        return wuwa_window_kind(process_path, class_name, install_root)
+    if game_id != 'nte':
+        return None
     exe = ntpath.basename(process_path).lower()
     if exe == GAME_EXE and class_name == "UnrealWindow":
         return "game"
@@ -76,13 +81,15 @@ class GameWindow:
     height: int
     pid: int = 0
     process_path: str = ""
+    game_id: str = 'nte'
+    install_root: str = ''
 
     @property
     def is_launcher(self):
-        return _window_kind(self.process_path, self.class_name) == "launcher"
+        return _window_kind(self.process_path, self.class_name, self.game_id, self.install_root) == "launcher"
 
 
-def list_game_windows(include_hidden_launchers=False):
+def list_game_windows(include_hidden_launchers=False, *, game_id='nte', install_root=''):
     """Find validated game windows, optionally including tray-hidden launchers.
 
     Hidden launchers are returned only to the startup flow, which can restore
@@ -96,10 +103,10 @@ def list_game_windows(include_hidden_launchers=False):
             if not visible and not include_hidden_launchers:
                 return True
             cls = win32gui.GetClassName(hwnd)
-            if cls != "UnrealWindow" and not LAUNCHER_CLASS.fullmatch(cls):
+            if game_id == 'nte' and cls != "UnrealWindow" and not LAUNCHER_CLASS.fullmatch(cls):
                 return True
             pid, path = _window_process(hwnd)
-            kind = _window_kind(path, cls)
+            kind = _window_kind(path, cls, game_id, install_root)
             if kind is None or (not visible and kind != "launcher"):
                 return True
             _, _, width, height = win32gui.GetClientRect(hwnd)
@@ -108,7 +115,7 @@ def list_game_windows(include_hidden_launchers=False):
                 width, height = right - left, bottom - top
             if width <= 200 or height <= 200:
                 return True
-            found.append(GameWindow(hwnd, win32gui.GetWindowText(hwnd), cls, width, height, pid, path))
+            found.append(GameWindow(hwnd, win32gui.GetWindowText(hwnd), cls, width, height, pid, path, game_id, install_root))
         except (OSError, win32gui.error):
             pass
         return True
@@ -121,8 +128,8 @@ def _bind_window(window):
         raise RuntimeError("游戏窗口已关闭，请刷新并重新连接")
     pid, path = _window_process(window.hwnd)
     cls = win32gui.GetClassName(window.hwnd)
-    if not _window_kind(path, cls):
-        raise RuntimeError("目标不是已验证的异环游戏或启动器窗口")
+    if not _window_kind(path, cls, window.game_id, window.install_root):
+        raise RuntimeError("目标不是当前游戏已验证的窗口")
     if window.pid and window.pid != pid:
         raise RuntimeError("窗口所属进程已变化，请重新连接")
     if window.process_path and ntpath.normcase(window.process_path) != ntpath.normcase(path):
@@ -142,7 +149,7 @@ def _assert_window_identity(window):
         raise RuntimeError("无法验证游戏窗口所属进程，请重新连接；权限不足时以管理员身份启动工具") from exc
     if (pid != window.pid or cls != window.class_name
             or ntpath.normcase(path) != ntpath.normcase(window.process_path)
-            or not _window_kind(path, cls)):
+            or not _window_kind(path, cls, window.game_id, window.install_root)):
         raise RuntimeError("窗口所属进程或类型已变化，已停止捕获，请重新连接")
 
 

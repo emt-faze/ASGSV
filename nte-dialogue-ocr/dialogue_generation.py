@@ -46,6 +46,7 @@ def atomic_text(path, text):
 
 
 EVIDENCE_FIELDS = (
+    "game_id",
     "dialogue_id", "event_id", "revision", "body", "speaker", "status", "speaker_status",
     "speaker_identity", "speaker_identity_confirmed", "body_confidence", "review_body_confidence",
     "quality_threshold", "human_confirmed", "source_clipped", "coverage_warning",
@@ -76,6 +77,11 @@ class DialogueRow:
         return bool(self.text.strip()) and not any(char.isalnum() for char in self.text)
 
     def review_reason(self):
+        if self.evidence.get('game_id') == 'wuwa':
+            from game_profiles import wuwa_row_reason
+            reason = wuwa_row_reason(self)
+            if reason:
+                return reason
         if not self.text.strip():
             return "台词为空"
         if self.confirmed:
@@ -149,7 +155,9 @@ class DeletedBatch:
 class GenerationProject:
     VERSION = 2
 
-    def __init__(self, directory, *, mode="system", rows=None, created=None, deleted_batches=None):
+    def __init__(self, directory, *, mode="system", rows=None, created=None, deleted_batches=None, game_id='nte'):
+        from game_profiles import validate_game
+        self.game_id = validate_game(game_id)
         if mode not in {"system", "character"}:
             raise ValueError("不支持的生成模式")
         self.directory = Path(directory).resolve()
@@ -159,9 +167,9 @@ class GenerationProject:
         self.created = created or timestamp()
 
     @classmethod
-    def create(cls, parent, mode="system"):
+    def create(cls, parent, mode="system", *, game_id='nte'):
         folder = Path(parent) / (datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid4().hex[:6])
-        project = cls(folder, mode=mode)
+        project = cls(folder, mode=mode, game_id=game_id)
         project.save()
         return project
 
@@ -193,7 +201,8 @@ class GenerationProject:
                     raise ValueError("删除记录的位置无效")
                 entries.append(DeletedEntry(entry["index"], load_row(entry["row"])))
             deleted_batches.append(DeletedBatch(entries, batch["deleted_at"]))
-        return cls(path.parent, mode=data["mode"], rows=rows, created=data.get("created"), deleted_batches=deleted_batches)
+        return cls(path.parent, mode=data["mode"], rows=rows, created=data.get("created"), deleted_batches=deleted_batches,
+                   game_id=data.get('game_id', 'nte'))
 
     def all_rows(self):
         return self.rows + [entry.row for batch in self.deleted_batches for entry in batch.entries]
@@ -261,6 +270,8 @@ class GenerationProject:
         return self._merge_records({record["dialogue_id"]: record}, str(Path(source_directory).resolve()), [])
 
     def _merge_records(self, newest, source, warnings):
+        if any(record.get('game_id', 'nte') != self.game_id for record in newest.values()):
+            raise ValueError('禁止导入另一游戏的识别记录')
         added, updated, unchanged = 0, 0, 0
         # Archived rows remain tombstones. Re-import and late OCR revisions
         # update their evidence without putting them back into the active list.
@@ -268,6 +279,8 @@ class GenerationProject:
         archived = {entry.row.id for batch in self.deleted_batches for entry in batch.entries}
         deleted = 0
         for identity, record in newest.items():
+            if record.get('game_id', 'nte') != self.game_id:
+                raise ValueError('禁止导入另一游戏的识别记录')
             evidence = {key: record[key] for key in EVIDENCE_FIELDS if key in record}
             revision = int(record.get("revision", 0))
             row = existing.get((source.casefold(), identity))
@@ -298,6 +311,8 @@ class GenerationProject:
         identity = uuid4().hex
         row = DialogueRow(identity, "manual", identity, 1, {"source_kind": "manual"},
                           speaker.strip(), text.strip(), voice=voice, confirmed=True, edited=True)
+        if self.game_id == 'wuwa':
+            row.evidence['game_id'] = 'wuwa'
         row.selected = not row.punctuation_only
         self.rows.append(row)
         return row
@@ -315,6 +330,10 @@ class GenerationProject:
         return count
 
     def audio_path(self, row, *, verify=True):
+        if self.game_id == 'wuwa':
+            from game_profiles import wuwa_row_reason
+            if wuwa_row_reason(row):
+                return None
         if row.punctuation_only:
             return None
         info = row.audio
@@ -332,7 +351,7 @@ class GenerationProject:
         return path
 
     def save(self):
-        payload = dict(version=self.VERSION, created=self.created, updated=timestamp(), mode=self.mode,
+        payload = dict(version=self.VERSION, game_id=self.game_id, created=self.created, updated=timestamp(), mode=self.mode,
                        rows=[asdict(row) for row in self.rows], deleted_batches=[asdict(batch) for batch in self.deleted_batches])
         atomic_text(self.directory / "project.json", json.dumps(payload, ensure_ascii=False, indent=2))
         manifest = []
@@ -366,7 +385,15 @@ def select_voice(runtime, row):
     if row.voice == "auto":
         return runtime.select_profile(row.route_record())
     kind, _, identity = row.voice.partition(":")
-    if runtime.system_mode and kind == "system":
+    if kind == 'npc' and not runtime.system_mode and runtime.options.get('game_id') == 'wuwa' and row.evidence.get('game_id') == 'wuwa':
+        from game_profiles import WUWA_ROOT
+        from wuwa_npc_voices import load_variant
+        speaker_id = row.evidence.get('speaker_id')
+        if not speaker_id:
+            raise ValueError('NPC 声线需要角色 ID，请重新建立鸣潮项目')
+        return load_variant(runtime.options.get('catalog_root', WUWA_ROOT), row.voice,
+                            speaker_id=speaker_id, speaker=row.speaker)[0], False
+    if kind == 'system' and (runtime.system_mode or row.evidence.get('game_id') == 'wuwa'):
         from system_voices import preset_profile
         return preset_profile(identity), False
     if not runtime.system_mode and kind == "character" and identity in runtime.profiles:
@@ -443,6 +470,8 @@ class BatchGenerator:
         if runtime_factory is None:
             voice_paths(options)
         self.project = project
+        if options.get('game_id', 'nte') != project.game_id:
+            raise ValueError('项目与生成器游戏不一致')
         self.options = dict(options, mode=project.mode, fallback_to_system=False)
         self.callback, self.runtime_factory = callback, runtime_factory or VoiceRuntime
         self.stop_event, self.finished = threading.Event(), threading.Event()
@@ -466,14 +495,79 @@ class BatchGenerator:
                     pass
 
     def run(self, ids=None, *, force=False):
+        if self.project.game_id == 'wuwa':
+            from wuwa_catalog import Catalog
+            from wuwa_resources import inventory
+            from game_profiles import WUWA_ROOT
+            root = Path(self.options.get('catalog_root', WUWA_ROOT))
+            config = json.loads((root / 'config.json').read_text(encoding='utf-8'))
+            inventory(config['install_root'], root)
+            catalog = Catalog(root)
+            try:
+                catalog.validate_project(self.project)
+                if self.project.directory.resolve().parent == (root/'live-generation-projects').resolve():
+                    if len(self.project.rows)!=1:
+                        raise ValueError('实时生成项目只能包含当前已核对的单句')
+                    live_row = self.project.rows[0]
+                    binding = catalog.binding(live_row.evidence['speaker_id'])
+                    if not binding or not binding['transcript_reviewed'] or binding['voice']!=live_row.voice:
+                        raise ValueError('生成前角色绑定已变化')
+                else:
+                    local_progress = Path(config['install_root']) / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db'
+                    if local_progress.exists() or catalog.progress.account:
+                        catalog.progress.refresh(config['install_root'])
+                    catalog.progress.validate_generation(self.project)
+                cloud_only = catalog.cloud_only()
+            finally:
+                catalog.close()
         from wuwa_dubber.models import Utterance
         from wuwa_dubber.speech_cache import SpeechCache, SpeechCancelled
         from wuwa_dubber.segmentation import split_for_speech
         requested = set(ids) if ids is not None else {r.id for r in self.project.rows if r.selected}
         rows = [r for r in self.project.rows if r.id in requested and not r.punctuation_only and not r.review_reason()]
+        if self.project.game_id == 'wuwa':
+            from game_profiles import wuwa_row_reason
+            rows = [r for r in rows if not wuwa_row_reason(r)]
         summary = dict(completed=0, cached=0, resumed=0, failed=0, cancelled=0,
                        silent=sum(r.id in requested and r.punctuation_only for r in self.project.rows),
                        held=sum(r.id in requested and not r.punctuation_only and bool(r.review_reason()) for r in self.project.rows))
+        if self.project.game_id == 'wuwa' and cloud_only:
+            from wuwa_breeze import assign_preset
+            from wuwa_log_generation import export_cloud, export_original_reference
+            catalog = Catalog(root)
+            try:
+                for row in rows:
+                    if self.stop_event.is_set():
+                        break
+                    try:
+                        assigned=catalog.binding(row.evidence['speaker_id'])
+                        if assigned and assigned['voice'].startswith('character:'):
+                            row.voice=assigned['voice']
+                            export_original_reference(catalog,config,self.project,row,self.stop_event,self.lock)
+                            summary['completed']+=1
+                            summary['cached']+=int(row.audio['cache_hit'])
+                            continue
+                        if not row.voice.startswith('breeze:'):
+                            bound = assign_preset(catalog, dict(speaker=row.speaker,speaker_id=row.evidence['speaker_id']))
+                            row.voice = bound['voice']
+                            row.audio = {}
+                        preset = row.voice.partition(':')[2]
+                        if not catalog.db.execute('SELECT 1 FROM breeze_presets WHERE id=?',(preset,)).fetchone():
+                            raise ValueError('请选择可用的 BreezeBlue 中文音色')
+                        self.emit('BreezeBlue 正在生成 · '+row.speaker,row_id=row.id)
+                        export_cloud(catalog,self.project,row,preset,
+                                     lambda: not self.stop_event.is_set() and catalog.cloud_only(),self.stop_event,self.lock)
+                        summary['completed'] += 1
+                        summary['cached'] += int(row.audio['cache_hit'])
+                    except Exception as exc:
+                        row.status,row.error = 'failed',str(exc)
+                        summary['failed'] += 1
+                        self.project.save()
+                        break
+            finally:
+                catalog.close()
+                self.finished.set()
+            return summary
         relay = threading.Thread(target=self._relay_cancel, daemon=True, name="batch-voice-cancel")
         relay.start()
         try:
@@ -493,7 +587,10 @@ class BatchGenerator:
             rows = [row for row in rows if row.id not in held_ids]
             if not rows:
                 return summary
-            self.runtime.prepare(self.stop_event, self.emit, playback=False)
+            mixed = self.project.game_id == 'wuwa' and self.project.mode == 'character'
+            runtimes = {}
+            if not mixed:
+                self.runtime.prepare(self.stop_event, self.emit, playback=False)
             if self.stop_event.is_set():
                 return summary
             cache = SpeechCache(self.runtime.config, self.runtime.cache_dir, self.runtime.client)
@@ -505,13 +602,32 @@ class BatchGenerator:
                 temp = output / f".{row.id}.{uuid4().hex}.tmp.wav"
                 started = time.monotonic()
                 try:
+                    if mixed:
+                        mode = 'system' if row.voice.startswith('system:') else 'character'
+                        if mode not in runtimes:
+                            runtime = self.runtime_factory(dict(self.options, mode=mode))
+                            if mode == 'character' and runtime.system_mode:
+                                raise ValueError('角色声线需要本地角色模型')
+                            self.runtime = runtime
+                            runtime.prepare(self.stop_event, self.emit, playback=False)
+                            runtimes[mode] = runtime
+                        self.runtime = runtimes[mode]
+                        cache = SpeechCache(self.runtime.config, self.runtime.cache_dir, self.runtime.client)
                     row.status, row.error = "generating", ""
                     self.project.save()
                     self.emit(f"正在生成 {number}/{len(rows)}：{row.speaker or '未指定角色'}", row_id=row.id,
                               current=number-1, total=len(rows))
                     profile, fallback = select_voice(self.runtime, row)
+                    if self.project.game_id == 'wuwa':
+                        from wuwa_studio_voice import configure_client
+                        configure_client(self.runtime, root, row)
+                        cache = SpeechCache(self.runtime.config, self.runtime.cache_dir, self.runtime.client)
                     utterance = Utterance(row.text, speaker=profile.speaker, source="batch_generation")
                     full_key = cache.path_for(utterance, profile).stem
+                    voice_signature = None
+                    if self.project.game_id == 'wuwa':
+                        from wuwa_voices import local_voice_signature
+                        voice_signature = local_voice_signature(self.runtime, profile)
                     if not force and row.audio.get("cache_key") == full_key and self.project.audio_path(row):
                         if upgrade_export_edges(self.project, row, stop=self.stop_event, lock=self.lock):
                             self.emit("已整理已有音频的首尾空白", row_id=row.id)
@@ -519,6 +635,8 @@ class BatchGenerator:
                             if self.stop_event.is_set():
                                 raise SpeechCancelled()
                             row.status = "done"
+                            if voice_signature:
+                                row.audio['local_voice_signature'] = voice_signature
                             summary["resumed"] += 1
                         continue
                     if row.audio.get("cache_key") != full_key:
@@ -557,6 +675,13 @@ class BatchGenerator:
                                 default_voice=bool(fallback),
                                 elapsed_seconds=round(time.monotonic()-started, 3), cache_hit=cache_hit,
                                 generated_at=timestamp())
+                    if voice_signature:
+                        info['local_voice_signature'] = voice_signature
+                    if self.project.game_id == 'wuwa':
+                        from wuwa_studio_voice import process_export
+                        processing = process_export(self.project, row, temp, self.stop_event, root)
+                        if processing:
+                            info['studio_processing'] = processing
                     _publish_export(self.project, row, temp, info, self.stop_event, self.lock)
                     with self.lock:
                         row.status = "done"

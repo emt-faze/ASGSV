@@ -242,7 +242,11 @@ class CaptureSession:
                 else:
                     packet = legacy.read(legacy_sequence)
                     if packet is None:
-                        self._pause("stale", geometry)
+                        # No *new* frame is not a capture failure. Keep the last
+                        # packet only within its original freshness deadline;
+                        # read(after_sequence) still cannot consume it twice.
+                        if self.peek() is None:
+                            self._pause("stale", geometry)
                         self._stop.wait(.05)
                         continue
                     legacy_sequence, captured_at, full_image = packet

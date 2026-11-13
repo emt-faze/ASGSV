@@ -61,6 +61,9 @@ class RapidModel:
 
 def make_ocr(config):
     from ocr_core import DialogueOCR, _build_engine, DEFAULT_ENGINE_OPTIONS
+    if config.get('game_id') == 'wuwa':
+        from wuwa_ocr import WuwaDialogueOCR
+        DialogueOCR = WuwaDialogueOCR
     mode = config.get("ocr_mode", "rapid_dual")
     if mode not in PROFILES:
         raise ValueError("未知识别方案：" + str(mode))

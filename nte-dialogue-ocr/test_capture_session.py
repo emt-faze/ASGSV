@@ -108,6 +108,42 @@ class CaptureSessionTests(unittest.TestCase):
             iconic.return_value = True
             self.assertEqual(capture.visible_region(self.window)[0], "minimized")
 
+    def test_wgc_gap_retains_fresh_packet_without_reissuing_or_refreshing_it(self):
+        backend = Mock()
+        backend.start.return_value = backend
+        waiting = threading.Event()
+        delivered = []
+        def read(sequence):
+            if not delivered:
+                stamp = time.monotonic()
+                delivered.append(stamp)
+                image = np.zeros((100,200,3),np.uint8)
+                image[:50] = 220
+                return (1,stamp,image)
+            waiting.set()
+            return None
+        backend.read.side_effect = read
+        with patch.object(capture,'LegacyCapture',return_value=backend), \
+             patch.object(capture,'enable_dpi_awareness'), \
+             patch.object(capture,'visible_region',return_value=('ready',self.geometry)):
+            session=capture.CaptureSession(self.window,backend='wgc',interval_ms=10,max_age=.3).start()
+            try:
+                self.assertTrue(waiting.wait(1))
+                # Let the no-new-frame branch complete, while still well inside max_age.
+                time.sleep(.03)
+                packet=session.read()
+                self.assertIsNotNone(packet)
+                self.assertEqual(packet.captured_at,delivered[0])
+                self.assertIsNone(session.read(packet.sequence))
+                deadline=time.monotonic()+1
+                while session.state != 'stale' and time.monotonic()<deadline:
+                    time.sleep(.01)
+                self.assertEqual(session.state,'stale')
+                self.assertIsNone(session.peek())
+                self.assertEqual(session.metrics()['captured_frames'],1)
+            finally:
+                session.stop()
+
     def test_moving_window_invalidates_pre_move_packet_before_next_capture_tick(self):
         session = capture.CaptureSession(self.window)
         session._geometry = self.geometry

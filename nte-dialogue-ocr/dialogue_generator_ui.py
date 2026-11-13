@@ -114,6 +114,10 @@ class GeneratorWindow(QtWidgets.QDialog):
         super().__init__(parent)
         self.root = Path(root)
         self.options = dict(options)
+        self.cloud_only = False
+        self.game_id = options.get('game_id', 'nte')
+        if self.game_id == 'wuwa':
+            self.options['catalog_root'] = str(self.root)
         voice_paths(options)
         self.window_lock = QtCore.QLockFile(str(self.root / "generator.lock"))
         self.window_lock.setStaleLockTime(0)
@@ -134,9 +138,10 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.export_dialog = None
         self.closing = False
         self.rendering = False
+        self.advanced_widgets = []
         self.editor_row = None
         self.idle_controls = []
-        self.setWindowTitle("异环 · 台词生成工具")
+        self.setWindowTitle(('鸣潮' if self.game_id == 'wuwa' else '异环') + ' · 台词生成工具')
         self.setWindowFlag(QtCore.Qt.WindowMinimizeButtonHint, True)
         self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
         self.resize(1220, 900)
@@ -147,14 +152,16 @@ class GeneratorWindow(QtWidgets.QDialog):
 
         # ── 标题区 ──────────────────────────────────────────────
         header_row = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("台词生成工具")
+        title = QtWidgets.QLabel("鸣潮 · 配音准备" if self.game_id == "wuwa" else "台词生成工具")
         title.setStyleSheet("font-size:22px; font-weight:700; color:#172c43; letter-spacing:1px;")
         header_row.addWidget(title)
         header_row.addStretch()
         # 项目管理按钮放到标题栏右侧
-        self.button(header_row, "新建项目", self.new_project)
-        self.button(header_row, "打开项目…", self.open_project)
-        self.button(header_row, "打开输出文件夹", self.open_output, idle=False)
+        self.advanced_widgets.extend([
+            self.button(header_row, "新建项目", self.new_project),
+            self.button(header_row, "打开项目…", self.open_project),
+            self.button(header_row, "打开输出文件夹", self.open_output, idle=False),
+        ])
         outer.addLayout(header_row)
 
         pipeline_label = QtWidgets.QLabel("识别 / 导入台词  →  核对文字和声线  →  批量生成  →  试听 / 游戏内自动播放")
@@ -166,6 +173,20 @@ class GeneratorWindow(QtWidgets.QDialog):
         tools_layout = QtWidgets.QVBoxLayout(tools_group)
         tools_layout.setSpacing(6)
         tools_layout.setContentsMargins(10, 14, 10, 8)
+        self.advanced_widgets.extend([pipeline_label, tools_group])
+        self.simple_controls = QtWidgets.QWidget()
+        simple = QtWidgets.QHBoxLayout(self.simple_controls)
+        simple.setContentsMargins(0, 0, 0, 0)
+        self.show_text = QtWidgets.QCheckBox('显示剧情正文')
+        self.show_text.setToolTip('台词会透露剧情；隐藏正文不影响生成和试听。')
+        self.advanced_toggle = QtWidgets.QCheckBox('高级设置')
+        simple.addWidget(self.show_text)
+        simple.addWidget(self.advanced_toggle)
+        simple.addStretch()
+        self.simple_play = self.button(simple, '开始配音', self.open_playback)
+        self.simple_play.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
+        outer.addWidget(self.simple_controls)
+        self.simple_controls.setVisible(self.game_id == 'wuwa')
         connected_tools = QtWidgets.QHBoxLayout()
         connected_tools.setSpacing(6)
         self.ocr_button = self.button(connected_tools, "识别游戏台词…", self.open_ocr)
@@ -214,11 +235,12 @@ class GeneratorWindow(QtWidgets.QDialog):
         modes.addWidget(self.batch_voice, 1)
         self.idle_controls.append(self.batch_voice)
         self.button(modes, "应用声线", self.apply_voice)
-        outer.addLayout(modes)
+        self.add_advanced_row(outer, modes)
         self.mode_note = QtWidgets.QLabel()
         self.mode_note.setWordWrap(True)
         self.mode_note.setObjectName("sectionNote")
         outer.addWidget(self.mode_note)
+        self.advanced_widgets.append(self.mode_note)
 
         # ── 台词表格 + 编辑器（可拖动分隔）──────────────────────
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
@@ -268,7 +290,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.delete_checked_button.setObjectName("danger")
         self.undo_button = self.button(selection, "撤销删除", self.undo_delete)
         selection.addStretch()
-        table_vbox.addLayout(selection)
+        self.add_advanced_row(table_vbox, selection)
 
         self.count_label = QtWidgets.QLabel()
         self.count_label.setWordWrap(True)
@@ -334,13 +356,18 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.generate.setObjectName("primary")
         self.generate.setMinimumHeight(36)
         self.button(actions, "重试失败项", lambda: self.start_generation(failed_only=True))
-        self.button(actions, "重新生成当前行", lambda: self.start_generation(force=True))
+        self.regenerate = self.button(actions, "重新生成当前行", lambda: self.start_generation(force=True))
+        self.advanced_widgets.append(self.regenerate)
         self.stop_generation = self.button(actions, "停止生成", self.cancel_generation, idle=False)
         self.stop_generation.setEnabled(False)
         actions.addStretch()
         self.preview = self.button(actions, "试听当前行", self.start_preview)
         self.stop_preview = self.button(actions, "停止试听", self.cancel_preview, idle=False)
         self.stop_preview.setEnabled(False)
+        self.generate.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
+        self.preview.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_MediaVolume))
+        self.stop_generation.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_MediaStop))
+        self.stop_preview.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_MediaStop))
         outer.addLayout(actions)
         self.progress = QtWidgets.QProgressBar()
         self.progress.setRange(0, 1)
@@ -349,7 +376,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.progress.setTextVisible(True)
         self.progress.setFormat("%v / %m")
         outer.addWidget(self.progress)
-        self.status = QtWidgets.QLabel("生成时不会播放声音。生成完成后，选择一行即可试听。")
+        self.status = QtWidgets.QLabel('就绪' if self.game_id == 'wuwa' else "生成时不会播放声音。生成完成后，选择一行即可试听。")
         self.status.setWordWrap(True)
         self.status.setObjectName("statusBar")
         self.status.setMinimumHeight(36)
@@ -358,6 +385,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.project_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.project_label.setStyleSheet("color:#67798e; font-size:10px; padding:2px 0px;")
         outer.addWidget(self.project_label)
+        self.advanced_widgets.append(self.project_label)
         self.edit_timer = QtCore.QTimer(self)
         self.edit_timer.setSingleShot(True)
         self.edit_timer.timeout.connect(self.save_editor)
@@ -371,12 +399,33 @@ class GeneratorWindow(QtWidgets.QDialog):
         if project_path:
             self.use_project(GenerationProject.load(project_path))
         else:
-            self.use_project(GenerationProject.create(self.projects_root, self.options.get("mode", "system")))
+            self.use_project(GenerationProject.create(self.projects_root, self.options.get("mode", "system"), game_id=self.game_id))
         configure_dialog(self, 'generator')
         set_help(self.mode, '系统中文声使用电脑已有声音；角色声线使用已添加的参考录音和本地模型。\n切换方式会重置本项目的声线选择，已有配音可能需要重新生成。', '生成方式')
         set_help(self.batch_voice, '选择要应用的声线，再点击“应用声线”。\n只作用于左侧打勾的台词；“按角色自动选择”根据角色名和别名匹配。', '批量声线')
         set_help(self.voice, '指定当前高亮台词的声线；“按角色自动选择”根据角色名和别名匹配。\n修改后自动保存，旧配音可能失效，需要重新生成。', '当前行声线')
         set_help(self.confirmed, '确认当前台词的文字和角色已经人工检查。\n修改文字或角色后需重新核对；声线不明确时另用“核对声线”。')
+        self.show_text.toggled.connect(self.update_simple_view)
+        self.advanced_toggle.toggled.connect(self.update_simple_view)
+        self.update_simple_view()
+
+    def add_advanced_row(self, outer, row):
+        widget = QtWidgets.QWidget()
+        widget.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(widget)
+        self.advanced_widgets.append(widget)
+
+    def update_simple_view(self):
+        wuwa = self.game_id == 'wuwa'
+        advanced = not wuwa or self.advanced_toggle.isChecked()
+        for widget in self.advanced_widgets:
+            widget.setVisible(advanced)
+        self.editor.parentWidget().setVisible(advanced and (not wuwa or self.show_text.isChecked()))
+        for column in (3, 6, 7):
+            self.table.setColumnHidden(column, not advanced)
+        if self.project:
+            self.render()
 
     def button(self, layout, label, callback, *, idle=True):
         button = QtWidgets.QPushButton(label)
@@ -400,6 +449,8 @@ class GeneratorWindow(QtWidgets.QDialog):
                     (self.preview_worker and self.preview_worker.isRunning()))
 
     def use_project(self, project):
+        if project.game_id != self.game_id:
+            raise ValueError('此项目属于另一游戏，请先切换游戏入口')
         self.save_editor()
         if self.project and self.project.directory == project.directory:
             return
@@ -429,16 +480,35 @@ class GeneratorWindow(QtWidgets.QDialog):
     def refresh_voices(self):
         items = [("按角色自动选择", "auto")]
         try:
-            self.runtime = VoiceRuntime(dict(self.options, mode=self.project.mode, fallback_to_system=False))
-            if self.project.mode == "system":
-                items.extend((label, "system:" + identity) for identity, (label, *_) in PRESETS.items())
-                note = "系统中文声 · 沿用已有角色绑定；年龄声线是调节音高和语速的试制预设。"
-            elif self.runtime.system_mode:
-                raise ValueError("共享配音设置未选择角色模型，请先在原工具的“参考音频与音量”中设置。")
+            if self.game_id == 'wuwa':
+                from wuwa_catalog import Catalog
+                catalog = Catalog(self.root)
+                try:
+                    self.cloud_only = catalog.cloud_only()
+                    if self.cloud_only:
+                        items.extend((v['name'],'breeze:'+v['id']) for v in catalog.db.execute(
+                            'SELECT id,name FROM breeze_presets ORDER BY name,id'))
+                finally:
+                    catalog.close()
+            if self.cloud_only:
+                self.runtime = None
+                self.mode_note.setText('BreezeBlue 中文音色 · 已生成的台词优先复用缓存')
             else:
-                items.extend((name, "character:" + name) for name in self.runtime.profiles)
-                note = "角色声线 · 沿用已有参考音频；首次生成较慢，重复台词会检查并复用缓存。"
-            self.mode_note.setText(note + " 切换生成方式会重置本项目的声线选择。")
+                self.runtime = VoiceRuntime(dict(self.options, mode=self.project.mode, fallback_to_system=False))
+                if self.project.mode == "system":
+                    items.extend((label, "system:" + identity) for identity, (label, *_) in PRESETS.items())
+                    note = "系统中文声 · 沿用已有角色绑定；年龄声线是调节音高和语速的试制预设。"
+                elif self.runtime.system_mode:
+                    raise ValueError("共享配音设置未选择角色模型，请先在原工具的“参考音频与音量”中设置。")
+                else:
+                    items.extend((name, "character:" + name) for name in self.runtime.profiles)
+                    if self.game_id == 'wuwa':
+                        items.extend((label + '（通用）', 'system:' + identity) for identity, (label, *_) in PRESETS.items())
+                        from game_profiles import WUWA_ROOT
+                        from wuwa_npc_voices import choices
+                        items.extend((label, voice) for label, voice, _ in choices(self.options.get('catalog_root', WUWA_ROOT)))
+                    note = "角色声线 · 沿用已有参考音频；首次生成较慢，重复台词会检查并复用缓存。"
+                self.mode_note.setText(note + " 切换生成方式会重置本项目的声线选择。")
         except Exception as exc:
             self.runtime = None
             self.mode_note.setText("声线尚未就绪：" + str(exc))
@@ -464,6 +534,10 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.table.blockSignals(True)
         self.table.setRowCount(len(self.project.rows))
         voice_held = 0
+        quality = {}
+        if self.game_id == 'wuwa':
+            from wuwa_workflow import project_quality
+            quality = project_quality(self.project)
         for index, row in enumerate(self.project.rows):
             check = QtWidgets.QTableWidgetItem()
             check.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsUserCheckable)
@@ -471,7 +545,12 @@ class GeneratorWindow(QtWidgets.QDialog):
             self.table.setItem(index, 0, check)
             reason = row.review_reason()
             review = "待核对" if reason else ("人工已确认" if row.confirmed else "OCR 已复核")
+            if self.game_id == 'wuwa' and not reason and row.confirmed:
+                review = '文字已核对'
             chosen = self.voice.itemText(self.voice.findData(row.voice)) or "声线不可用"
+            full_voice_label = chosen
+            if self.game_id == 'wuwa' and row.voice.startswith('npc:'):
+                chosen = 'NPC 定制声'
             actual = row.audio.get("voice", "")
             default = row.audio.get("default_voice", False)
             if not actual and self.runtime:
@@ -490,13 +569,18 @@ class GeneratorWindow(QtWidgets.QDialog):
             state = "无需配音" if row.punctuation_only else STATE_NAMES.get(row.status, row.status)
             if row.status == "done" and row.audio and not row.punctuation_only:
                 state += f" · {row.audio['duration_seconds']:.1f}秒"
-            values = [row.speaker or "未指定", row.text, review, chosen, state, actual,
+                if quality:
+                    state += '\n' + {'pass': '自动检查通过', 'review': '读音待核对', 'unchecked': '尚未检查'}[quality[row.id]]
+            visible_text = row.text if self.game_id != 'wuwa' or self.show_text.isChecked() else '正文已隐藏'
+            values = [row.speaker or "未指定", visible_text, review, chosen, state, actual,
                       decision.label if decision else "无需配音" if row.punctuation_only else "未就绪"]
             for column, value in enumerate(values, 1):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setToolTip(row.error if column == 5 and row.error else reason if column == 3 and reason else value)
                 if column in (1, 3, 5, 7):
                     item.setTextAlignment(QtCore.Qt.AlignCenter)
+                if column == 4:
+                    item.setToolTip(full_voice_label)
                 if column == 7 and decision:
                     item.setToolTip(decision.detail)
                     if decision.needs_review:
@@ -519,6 +603,14 @@ class GeneratorWindow(QtWidgets.QDialog):
         ready = sum(row.selected and not row.punctuation_only and not row.review_reason() for row in self.project.rows)
         held = sum(row.selected and not row.punctuation_only and bool(row.review_reason()) for row in self.project.rows)
         self.count_label.setText(f"共 {len(self.project.rows)} 条 · 文字就绪 {ready} 条 · 文字待核对 {held} 条 · 声线待核对 {voice_held} 条")
+        if quality:
+            from wuwa_workflow import quality_label
+            self.count_label.setText(self.count_label.text() + '\n' + quality_label(quality))
+        if self.game_id == 'wuwa' and not self.busy():
+            done = sum(row.status == 'done' and bool(self.project.audio_path(row, verify=False)) for row in self.project.rows)
+            self.progress.setRange(0, max(1, len(self.project.rows)))
+            self.progress.setValue(done)
+            self.simple_play.setEnabled(done > 0)
         self.editor.setEnabled(not self.busy() and self.editor_row is not None)
         self.undo_button.setEnabled(not self.busy() and bool(self.project.deleted_batches))
 
@@ -751,7 +843,7 @@ class GeneratorWindow(QtWidgets.QDialog):
 
     def new_project(self):
         try:
-            self.use_project(GenerationProject.create(self.projects_root, self.mode.currentData()))
+            self.use_project(GenerationProject.create(self.projects_root, self.mode.currentData(), game_id=self.game_id))
             self.load_editor(-1)
             self.status.setText("已新建项目。之前的项目及音频仍保存在输出文件夹中。")
         except Exception as exc:
@@ -814,6 +906,14 @@ class GeneratorWindow(QtWidgets.QDialog):
         if self.busy():
             return
         self.save_editor()
+        if self.game_id == 'wuwa':
+            from wuwa_workflow import project_quality
+            if any(value != 'pass' for value in project_quality(self.project).values()):
+                answer = QtWidgets.QMessageBox.question(self, '配音仍需试听确认',
+                    '当前项目仍有读音待核对或尚未检查的音频，自然度也未确认。是否继续打开游戏配音？',
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+                if answer != QtWidgets.QMessageBox.Yes:
+                    return
         try:
             from generator_playback import PreparedPlaybackDialog
             self.playback_dialog = PreparedPlaybackDialog(self.root, self.project, self.options, self)
@@ -968,7 +1068,7 @@ class GeneratorWindow(QtWidgets.QDialog):
         if self.busy():
             return
         self.save_editor()
-        if not self.runtime:
+        if not self.cloud_only and not self.runtime:
             self.refresh_voices()
             if not self.runtime:
                 self.status.setText("声线尚未就绪，请按生成方式下方提示检查设置。")
@@ -979,7 +1079,7 @@ class GeneratorWindow(QtWidgets.QDialog):
             self.status.setText("没有可生成的台词。请勾选并核对文字；纯省略号等标点无需配音。")
             return
         eligible = [row for row in rows if not row.punctuation_only and not row.review_reason()]
-        if uncertain_rows(self.runtime, eligible) and not self.review_voices(eligible):
+        if self.runtime and uncertain_rows(self.runtime, eligible) and not self.review_voices(eligible):
             return
         if self.closing:
             return
@@ -1104,7 +1204,18 @@ def main():
         application.setFont(font)
     try:
         config = json.loads((ROOT / "config.json").read_text(encoding="utf-8-sig"))
-        window = GeneratorWindow(config.get("dubbing", {}), project_path=args.project)
+        if args.project:
+            project = GenerationProject.load(args.project)
+            if project.game_id == 'wuwa':
+                from game_profiles import initialize_wuwa
+                root = initialize_wuwa()
+                config = json.loads((root / 'config.json').read_text(encoding='utf-8'))
+                window = GeneratorWindow(config['dubbing'], root=root, project_path=args.project)
+            else:
+                window = GeneratorWindow(config.get('dubbing', {}), project_path=args.project)
+        else:
+            from wuwa_ui import GameHome
+            window = GameHome()
     except Exception as exc:
         QtWidgets.QMessageBox.warning(None, "台词生成工具未打开", str(exc))
         return 1
