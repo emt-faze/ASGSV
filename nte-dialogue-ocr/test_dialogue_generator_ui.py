@@ -113,6 +113,20 @@ class GeneratorUiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "已打开"):
             GeneratorWindow({"mode": "system"}, root=self.root)
 
+    def test_compact_layout_keeps_table_and_generation_controls_accessible(self):
+        self.add('伊洛伊：检查小窗口布局')
+        for expanded in (False, True):
+            with self.subTest(tools_expanded=expanded):
+                self.window.tools_toggle.setChecked(expanded)
+                self.window.resize(1100, 650)
+                self.app.processEvents()
+                self.assertLessEqual(self.window.height(), 650)
+                self.assertGreaterEqual(self.window.table.viewport().height(), 90)
+                for button in (self.window.generate, self.window.stop_generation, self.window.preview):
+                    bounds = QtCore.QRect(button.mapTo(self.window, QtCore.QPoint()), button.size())
+                    self.assertTrue(self.window.rect().contains(bounds), button.text())
+                self.assertEqual(self.window.tools_panel.isVisible(), expanded)
+
     def test_close_cancels_and_waits_for_worker_before_releasing_lock(self):
         self.add("伊洛伊：你好")
         self.client.release.clear()

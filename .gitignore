@@ -53,6 +53,13 @@ nte-dialogue-ocr/assets/ocr-v6/*.onnx
 **/voice-library-runtime.json
 **/voice-library-source.json
 
+# NTE resources and local preparation state
+**/nte-data/
+**/nte_organizer/settings.json
+nte-dialogue-ocr/assets/nte-resource-reader/assemblies/
+nte-dialogue-ocr/assets/nte-resource-reader/dotnet/
+nte-dialogue-ocr/assets/nte-resource-reader/pythonlibs/
+
 # Per-installation game catalogs, session state and generated audio
 /game-data/
 /ASGSV.exe

@@ -1,6 +1,8 @@
 # ASGSV · 鸣潮与异环剧情配音工具
 
-ASGSV 是一款 Windows 桌面工具，为游戏里没有原声的中文对白配音。在《鸣潮》中，工具读取游戏日志定位当前台词，翻页时立即停掉上一句。如果新录音完成时玩家已经翻页，音频会保存下来供下次使用。《异环》使用窗口采集和 OCR 识别字幕，也可以先导入台词，核对角色、生成录音后再进游戏播放。
+ASGSV 是一款 Windows 桌面工具，为游戏里没有原声的中文对白配音。在《鸣潮》中，工具读取游戏日志定位当前台词，翻页时立即停掉上一句。如果新录音完成时玩家已经翻页，音频会保存下来供下次使用。《异环》优先读取日志编号，缺少编号时用字幕定位游戏原文，也可以自动查找安装目录、提取台词并建立配音项目。
+
+**[下载异环版 v0.4.14-nte.4（含字幕模型和资源读取组件）](https://github.com/emt-faze/ASGSV/releases/download/dialogue-generator-v0.4.14-nte.4/dialogue-generator-v0.4.14-nte.4-windows-with-ocr-models.zip)** · [异环版发布说明](https://github.com/emt-faze/ASGSV/releases/tag/dialogue-generator-v0.4.14-nte.4)
 
 **[下载 Windows 版 v0.4.14（含两套鸣潮任务配音）](https://github.com/emt-faze/ASGSV/releases/download/wuwa-v0.4.14/ASGSV-v0.4.14-Windows-Quests.zip)** · [发布说明及 SHA-256 校验文件](https://github.com/emt-faze/ASGSV/releases/tag/wuwa-v0.4.14)
 
@@ -19,13 +21,15 @@ ASGSV 是一款 Windows 桌面工具，为游戏里没有原声的中文对白�
 
 ## 异环与本地配音
 
-运行 **安装台词生成工具.bat**，安装后双击 **打开台词生成工具.bat**。可从游戏窗口识别字幕，也可以导入识别记录或台词文本，逐行编辑和试听。[台词生成器使用指南](docs/台词生成工具使用指南.md) · [本地角色模型安装](docs/模型安装.md)
+准备 Windows 10/11 和 64 位 Python 3.12，下载异环版完整 ZIP 并解压。首次联网运行 **安装异环配音.bat**，随后双击 **打开异环配音.bat**。在“任务库与配音准备”页自动识别安装目录、提取中文台词，按角色或关键词检索并建立配音项目。实时配音前通过“字幕校准”选择字幕区域，打开游戏后连接。
+
+“实时配音”和“任务库与配音准备”共用台词库。游戏更新后再次进入准备页会检查资源版本。使用系统中文声音即可开始配音，角色声线可在项目中另行设置。[异环版安装与使用](docs/异环配音v0.4.14-nte.4.md) · [台词生成器使用指南](docs/台词生成工具使用指南.md) · [本地角色模型安装](docs/模型安装.md)
 
 ## 仓库文件
 
 | 位置 | 内容 |
 | --- | --- |
-| [nte-dialogue-ocr/](nte-dialogue-ocr/) | 桌面主程序、鸣潮日志识别与任务库、异环 OCR、台词编辑及测试 |
+| [nte-dialogue-ocr/](nte-dialogue-ocr/) | 桌面主程序、鸣潮日志识别与任务库、异环日志与字幕配音、台词整理及测试 |
 | [wuwa-dubber/](wuwa-dubber/) | 两个游戏共用的语音合成、缓存和播放组件 |
 | [local-voice-model/](local-voice-model/) | 可选的本地合成服务 |
 | [scripts/](scripts/) 和 [launcher-source/](launcher-source/) | 安装与打包脚本、Windows 启动器源码 |

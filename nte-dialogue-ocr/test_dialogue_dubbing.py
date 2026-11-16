@@ -3,6 +3,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import threading
+import tempfile
 import time
 import unittest
 import uuid
@@ -85,8 +86,9 @@ def event(identity='one', **updates):
 
 class FlowTests(unittest.TestCase):
     def setUp(self):
-        self.directory = Path(__file__).resolve().parent / 'validation/dubbing-tests' / uuid.uuid4().hex
-        self.directory.mkdir(parents=True)
+        temporary = tempfile.TemporaryDirectory(prefix='dubbing-')
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
         self.runtime = Runtime(self.directory)
         self.events = []
         self.controller = DubbingController(self.runtime, self.events.append)

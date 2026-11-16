@@ -166,6 +166,21 @@ class GeneratorAppearanceTests(unittest.TestCase):
         dialog.preview_finished()
         self.assertIn('<b>试听所选声音</b>', dialog.preview.toolTip())
 
+    def test_live_dubbing_help_describes_playback_and_tracks_pause(self):
+        from nte_live_ui import NteLiveDialog
+        with patch('wuwa_hotkeys.PlaybackHotkeys') as hotkeys:
+            hotkeys.return_value.errors = []
+            dialog = self.keep(NteLiveDialog(self.root))
+        self.assertIn('生成并播放', dialog.start.toolTip())
+        self.assertIn('停止实时配音', dialog.stop.toolTip())
+        for button in (dialog.pause_button, dialog.replay_button, dialog.skip_button,
+                       dialog.voice_button, dialog.update_button, dialog.return_button):
+            self.assertTrue(button.toolTip(), button.text())
+        dialog.pause_button.setChecked(True)
+        self.assertIn('继续 F8', dialog.pause_button.toolTip())
+        dialog.pause_button.setChecked(False)
+        self.assertIn('暂停 F8', dialog.pause_button.toolTip())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -14,7 +14,7 @@ from dialogue_dubbing import ROOT, VoiceRuntime, voice_paths
 from dialogue_generation import BatchGenerator, GenerationProject, latest_record, select_voice
 from system_voices import PRESETS
 from generator_voice_review import describe_voice, uncertain_rows, apply_voice_choices, review_dialog
-from generator_ui_support import configure_application, configure_dialog, set_help
+from generator_ui_support import configure_application, configure_dialog, fit_window_to_screen, set_help
 
 
 STATE_NAMES = {"pending": "待生成", "generating": "生成中", "done": "已完成",
@@ -44,12 +44,21 @@ class ManualDialogueDialog(QtWidgets.QDialog):
         layout.addLayout(form)
         note = QtWidgets.QLabel("添加后视为已人工核对；仅有省略号等标点的台词会保留，并标为无需配音。")
         note.setWordWrap(True)
+        note.setStyleSheet("""
+            background: #f0fdfa;
+            border: 1px solid #ccfbf1;
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: #0f766e;
+            font-size: 12px;
+        """)
         layout.addWidget(note)
         self.error = QtWidgets.QLabel()
-        self.error.setStyleSheet("color:#b33e35;")
+        self.error.setStyleSheet("color:#dc2626; font-size:12px; font-weight:500;")
         layout.addWidget(self.error)
         buttons = QtWidgets.QDialogButtonBox()
-        buttons.addButton("添加台词", QtWidgets.QDialogButtonBox.AcceptRole)
+        add_btn = buttons.addButton("添加台词", QtWidgets.QDialogButtonBox.AcceptRole)
+        add_btn.setObjectName("primary")
         buttons.addButton("取消", QtWidgets.QDialogButtonBox.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -143,37 +152,51 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.idle_controls = []
         self.setWindowTitle(('鸣潮' if self.game_id == 'wuwa' else '异环') + ' · 台词生成工具')
         self.setWindowFlag(QtCore.Qt.WindowMinimizeButtonHint, True)
+        self.setWindowFlag(QtCore.Qt.WindowMaximizeButtonHint, True)
         self.setWindowFlag(QtCore.Qt.WindowContextHelpButtonHint, False)
-        self.resize(1220, 900)
-        self.setMinimumSize(980, 760)
+        self.setMinimumSize(900, 600)
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(20, 16, 20, 12)
-        outer.setSpacing(6)
-
-        # ── 标题区 ──────────────────────────────────────────────
-        header_row = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("鸣潮 · 配音准备" if self.game_id == "wuwa" else "台词生成工具")
-        title.setStyleSheet("font-size:22px; font-weight:700; color:#172c43; letter-spacing:1px;")
-        header_row.addWidget(title)
-        header_row.addStretch()
-        # 项目管理按钮放到标题栏右侧
-        self.advanced_widgets.extend([
-            self.button(header_row, "新建项目", self.new_project),
-            self.button(header_row, "打开项目…", self.open_project),
-            self.button(header_row, "打开输出文件夹", self.open_output, idle=False),
-        ])
-        outer.addLayout(header_row)
-
-        pipeline_label = QtWidgets.QLabel("识别 / 导入台词  →  核对文字和声线  →  批量生成  →  试听 / 游戏内自动播放")
-        pipeline_label.setObjectName("sectionNote")
-        outer.addWidget(pipeline_label)
-
-        # ── 工具栏区：连接工具 + 台词导入 ────────────────────────
-        tools_group = QtWidgets.QGroupBox("工具与导入")
-        tools_layout = QtWidgets.QVBoxLayout(tools_group)
-        tools_layout.setSpacing(6)
-        tools_layout.setContentsMargins(10, 14, 10, 8)
-        self.advanced_widgets.extend([pipeline_label, tools_group])
+        outer.setContentsMargins(16, 12, 16, 12)
+        outer.setSpacing(8)
+        title_row = QtWidgets.QHBoxLayout()
+        title_row.setSpacing(10)
+        title = QtWidgets.QLabel('鸣潮 · 配音准备' if self.game_id == 'wuwa' else "异环 · 台词生成工具")
+        title.setStyleSheet("font-size:20px; font-weight:700; color:#f1f5f9;")
+        title_row.addWidget(title)
+        badge = QtWidgets.QLabel('鸣潮 Wuthering Waves' if self.game_id == 'wuwa' else '异环 NTE')
+        badge.setStyleSheet(
+            'background: #0f2942; color: #38bdf8; border: 1px solid #1e3a8a; border-radius: 6px; padding: 2px 8px; font-weight: bold; font-size: 11px;'
+            if self.game_id == 'wuwa' else
+            'background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #06b6d4, stop:0.5 #3b82f6, stop:1 #8b5cf6); color: #ffffff; border: none; border-radius: 10px; padding: 3px 12px; font-weight: 800; font-size: 11px; letter-spacing: 1px;'
+        )
+        title_row.addWidget(badge)
+        self.project_title = QtWidgets.QLabel()
+        self.project_title.setTextFormat(QtCore.Qt.PlainText)
+        self.project_title.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.project_title.setStyleSheet('color:#94a3b8; font-size:12px;')
+        title_row.addWidget(self.project_title, 1)
+        self.tools_toggle = QtWidgets.QToolButton()
+        self.tools_toggle.setText('导入、声线与项目设置')
+        self.tools_toggle.setCheckable(True)
+        self.tools_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self.tools_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        set_help(self.tools_toggle, '展开台词采集、导入、声线管理、项目管理和导出操作。再次点击可收起。')
+        title_row.addWidget(self.tools_toggle)
+        outer.addLayout(title_row)
+        self.workflow_banner = QtWidgets.QLabel(
+            '<span style="background:#0e3a4b; color:#38bdf8; padding:3px 8px; border-radius:6px; font-weight:700;">① 采集/导入台词</span>  <span style="color:#64748b;">→</span>  '
+            '<span style="background:#0e382a; color:#34d399; padding:3px 8px; border-radius:6px; font-weight:700;">② 核对文字和声线</span>  <span style="color:#64748b;">→</span>  '
+            '<span style="background:#232048; color:#a78bfa; padding:3px 8px; border-radius:6px; font-weight:700;">③ 批量生成配音</span>  <span style="color:#64748b;">→</span>  '
+            '<span style="background:#3d1426; color:#f472b6; padding:3px 8px; border-radius:6px; font-weight:700;">④ 试听/自动播放</span>'
+        )
+        self.workflow_banner.setStyleSheet("""
+            background: #141722;
+            border: 1px solid #252b3d;
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 12px;
+        """)
+        outer.addWidget(self.workflow_banner)
         self.simple_controls = QtWidgets.QWidget()
         simple = QtWidgets.QHBoxLayout(self.simple_controls)
         simple.setContentsMargins(0, 0, 0, 0)
@@ -187,142 +210,113 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.simple_play.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
         outer.addWidget(self.simple_controls)
         self.simple_controls.setVisible(self.game_id == 'wuwa')
+        self.tools_panel = QtWidgets.QScrollArea()
+        self.tools_panel.setWidgetResizable(True)
+        self.tools_panel.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.tools_panel.setFixedHeight(124)
+        tools_body = QtWidgets.QWidget()
+        tools_layout = QtWidgets.QVBoxLayout(tools_body)
+        tools_layout.setContentsMargins(0, 0, 0, 0)
+        tools_layout.setSpacing(6)
+        self.tools_panel.setWidget(tools_body)
+        self.tools_panel.hide()
+        outer.addWidget(self.tools_panel)
+        self.tools_toggle.toggled.connect(self.show_tools)
         connected_tools = QtWidgets.QHBoxLayout()
-        connected_tools.setSpacing(6)
         self.ocr_button = self.button(connected_tools, "识别游戏台词…", self.open_ocr)
         self.auto_play_button = self.button(connected_tools, "自动识别并播放…", self.open_playback)
-        connected_tools.addSpacing(10)
-        self._add_separator(connected_tools)
-        connected_tools.addSpacing(10)
         self.add_voice_button = self.button(connected_tools, "添加角色声线…", self.add_voice)
         self.library_button = self.button(connected_tools, "批量建立声线…", self.open_voice_library)
         self.button(connected_tools, "系统角色声线设置…", self.system_voice_settings)
-        connected_tools.addStretch()
-        tools_layout.addLayout(connected_tools)
-        import_row = QtWidgets.QHBoxLayout()
-        import_row.setSpacing(6)
-        self.button(import_row, "导入最近记录", self.import_latest)
-        self.button(import_row, "选择识别记录…", self.choose_import)
-        import_row.addSpacing(10)
-        self._add_separator(import_row)
-        import_row.addSpacing(10)
-        self.manual_button = self.button(import_row, "手动添加台词…", self.add_dialogue)
-        self.button(import_row, "粘贴台词…", self.paste_text)
-        self.export_button = self.button(import_row, "导出台词…", self.export_dialogue)
-        import_row.addStretch()
-        tools_layout.addLayout(import_row)
-        outer.addWidget(tools_group)
-
-        # ── 生成方式 ────────────────────────────────────────────
+        tools_note = QtWidgets.QLabel("采集台词或播放本项目已生成的音频；声线与原配音工具共用。")
+        tools_note.setWordWrap(True)
+        tools_note.setStyleSheet("color:#64748b; font-size:11px;")
+        connected_tools.addWidget(tools_note, 1)
+        self.add_advanced_row(tools_layout, connected_tools)
+        toolbar = QtWidgets.QHBoxLayout()
+        self.button(toolbar, "导入最近记录", self.import_latest)
+        self.button(toolbar, "选择识别记录…", self.choose_import)
+        self.manual_button = self.button(toolbar, "手动添加台词…", self.add_dialogue)
+        self.button(toolbar, "粘贴台词…", self.paste_text)
+        self.export_button = self.button(toolbar, "导出台词…", self.export_dialogue)
+        toolbar.addStretch()
+        self.button(toolbar, "新建项目", self.new_project)
+        self.button(toolbar, "打开项目…", self.open_project)
+        self.button(toolbar, "打开输出文件夹", self.open_output, idle=False)
+        self.add_advanced_row(tools_layout, toolbar)
         modes = QtWidgets.QHBoxLayout()
-        modes.setSpacing(8)
-        mode_label = QtWidgets.QLabel("生成方式")
-        mode_label.setStyleSheet("font-weight:600;")
+        modes.setSpacing(10)
+        mode_label = QtWidgets.QLabel("生成方式:")
+        mode_label.setStyleSheet("font-weight: 600; color: #1e293b;")
         modes.addWidget(mode_label)
         self.mode = QtWidgets.QComboBox()
-        self.mode.setMinimumWidth(200)
         self.mode.addItem("系统中文声（较快）", "system")
         self.mode.addItem("已有角色声线（本地模型）", "character")
         self.mode.currentIndexChanged.connect(self.change_mode)
         self.idle_controls.append(self.mode)
         modes.addWidget(self.mode)
-        modes.addSpacing(20)
-        self._add_separator(modes)
-        modes.addSpacing(20)
-        modes.addWidget(QtWidgets.QLabel("将勾选项的声线设为"))
+        modes.addSpacing(15)
+        batch_voice_label = QtWidgets.QLabel("将勾选项的声线设为:")
+        batch_voice_label.setStyleSheet("font-weight: 600; color: #1e293b;")
+        modes.addWidget(batch_voice_label)
         self.batch_voice = QtWidgets.QComboBox()
-        self.batch_voice.setMinimumWidth(160)
         modes.addWidget(self.batch_voice, 1)
         self.idle_controls.append(self.batch_voice)
         self.button(modes, "应用声线", self.apply_voice)
         self.add_advanced_row(outer, modes)
         self.mode_note = QtWidgets.QLabel()
         self.mode_note.setWordWrap(True)
-        self.mode_note.setObjectName("sectionNote")
-        outer.addWidget(self.mode_note)
+        self.mode_note.setStyleSheet("color:#64748b; font-size:12px;")
+        tools_layout.addWidget(self.mode_note)
         self.advanced_widgets.append(self.mode_note)
-
-        # ── 台词表格 + 编辑器（可拖动分隔）──────────────────────
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        splitter.setChildrenCollapsible(False)
-
-        # 表格面板
-        table_panel = QtWidgets.QWidget()
-        table_vbox = QtWidgets.QVBoxLayout(table_panel)
-        table_vbox.setContentsMargins(0, 0, 0, 0)
-        table_vbox.setSpacing(4)
-
+        self.workspace_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.setHandleWidth(6)
+        table_area = QtWidgets.QWidget()
+        table_layout = QtWidgets.QVBoxLayout(table_area)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(6)
         self.table = QtWidgets.QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(["生成", "角色", "台词", "文字核对", "指定声线", "生成结果", "实际声线", "匹配来源"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setDefaultSectionSize(38)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setMinimumHeight(180)
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        self.table.setMinimumHeight(132)
         header = self.table.horizontalHeader()
-        for index, width in ((0, 42), (1, 85), (3, 90), (4, 110), (5, 125), (6, 130), (7, 100)):
+        for index, width in ((0, 46), (1, 90), (3, 100), (4, 115), (5, 130), (6, 140), (7, 110)):
             header.resizeSection(index, width)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        header.setHighlightSections(False)
         self.table.itemChanged.connect(self.check_changed)
         self.table.currentCellChanged.connect(self.current_changed)
-        table_vbox.addWidget(self.table, 1)
-
-        # 表格下方操作条
+        table_layout.addWidget(self.table, 1)
         selection = QtWidgets.QHBoxLayout()
-        selection.setSpacing(4)
         self.button(selection, "全选", lambda: self.check_all(True))
         self.button(selection, "全不选", lambda: self.check_all(False))
-        selection.addSpacing(8)
-        self._add_separator(selection)
-        selection.addSpacing(8)
         self.button(selection, "确认勾选项已核对", self.confirm_checked)
         self.review_voice_button = self.button(selection, "核对声线…", self.review_voices)
-        selection.addSpacing(8)
-        self._add_separator(selection)
-        selection.addSpacing(8)
         self.delete_current_button = self.button(selection, "删除当前行", self.delete_current)
-        self.delete_current_button.setObjectName("danger")
         self.delete_checked_button = self.button(selection, "删除勾选项", self.delete_checked)
-        self.delete_checked_button.setObjectName("danger")
         self.undo_button = self.button(selection, "撤销删除", self.undo_delete)
         selection.addStretch()
-        self.add_advanced_row(table_vbox, selection)
-
         self.count_label = QtWidgets.QLabel()
         self.count_label.setWordWrap(True)
-        self.count_label.setObjectName("countLabel")
-        table_vbox.addWidget(self.count_label)
-        splitter.addWidget(table_panel)
-
-        # 编辑器面板
-        editor_panel = QtWidgets.QWidget()
-        editor_vbox = QtWidgets.QVBoxLayout(editor_panel)
-        editor_vbox.setContentsMargins(0, 0, 0, 0)
-        editor_vbox.setSpacing(4)
-
-        self.editor = QtWidgets.QGroupBox("当前行 · 修改后自动保存在项目中")
+        self.add_advanced_row(table_layout, selection)
+        table_layout.addWidget(self.count_label)
+        self.workspace_splitter.addWidget(table_area)
+        self.editor = QtWidgets.QGroupBox("当前台词编辑 · 修改后自动保存在项目中")
         box = QtWidgets.QVBoxLayout(self.editor)
-        box.setSpacing(6)
+        box.setContentsMargins(10, 8, 10, 8)
+        box.setSpacing(8)
         fields = QtWidgets.QHBoxLayout()
-        fields.setSpacing(8)
-        speaker_label = QtWidgets.QLabel("角色")
-        speaker_label.setStyleSheet("font-weight:600;")
-        fields.addWidget(speaker_label)
+        fields.addWidget(QtWidgets.QLabel("角色"))
         self.speaker = QtWidgets.QLineEdit()
         self.speaker.setPlaceholderText("未指定角色将使用默认声线")
         fields.addWidget(self.speaker, 1)
-        fields.addSpacing(10)
-        voice_label = QtWidgets.QLabel("声线")
-        voice_label.setStyleSheet("font-weight:600;")
-        fields.addWidget(voice_label)
+        fields.addWidget(QtWidgets.QLabel("声线"))
         self.voice = QtWidgets.QComboBox()
-        self.voice.setMinimumWidth(150)
         fields.addWidget(self.voice, 1)
-        fields.addSpacing(10)
         self.button(fields, "查看原图", self.show_source)
         box.addLayout(fields)
         self.text = QtWidgets.QPlainTextEdit()
@@ -331,30 +325,33 @@ class GeneratorWindow(QtWidgets.QDialog):
         box.addWidget(self.text)
         confirmation = QtWidgets.QHBoxLayout()
         self.confirmed = QtWidgets.QCheckBox("我已核对当前台词和角色")
-        self.confirmed.setStyleSheet("QCheckBox { spacing:6px; } QCheckBox::indicator { width:16px; height:16px; }")
         confirmation.addWidget(self.confirmed)
         confirmation.addStretch()
         self.button(confirmation, "保存当前修改", self.save_editor)
         box.addLayout(confirmation)
         self.evidence = QtWidgets.QLabel()
         self.evidence.setWordWrap(True)
-        self.evidence.setStyleSheet("color:#5f6f82; font-size:9pt;")
+        self.evidence.setStyleSheet("color:#5f6f82;")
         box.addWidget(self.evidence)
         self.speaker.textEdited.connect(self.unconfirm)
         self.text.textChanged.connect(self.unconfirm)
-        editor_vbox.addWidget(self.editor)
-        splitter.addWidget(editor_panel)
-
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        outer.addWidget(splitter, 1)
-
-        # ── 底部操作 + 进度 + 状态 ──────────────────────────────
+        self.editor_scroll = QtWidgets.QScrollArea()
+        self.editor_scroll.setWidgetResizable(True)
+        self.editor_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.editor_scroll.setMinimumHeight(90)
+        self.editor_scroll.setWidget(self.editor)
+        self.workspace_splitter.addWidget(self.editor_scroll)
+        self.workspace_splitter.setStretchFactor(0, 1)
+        self.workspace_splitter.setStretchFactor(1, 0)
+        self.workspace_splitter.setSizes([440, 210])
+        outer.addWidget(self.workspace_splitter, 1)
         actions = QtWidgets.QHBoxLayout()
-        actions.setSpacing(6)
+        actions.setSpacing(10)
         self.generate = self.button(actions, "生成 / 继续勾选项", self.start_generation)
         self.generate.setObjectName("primary")
-        self.generate.setMinimumHeight(36)
+        self.generate.setMinimumHeight(40)
+        self.generate.setCursor(QtCore.Qt.PointingHandCursor)
+        self.generate.setStyleSheet("font-size: 13px; font-weight: 600;")
         self.button(actions, "重试失败项", lambda: self.start_generation(failed_only=True))
         self.regenerate = self.button(actions, "重新生成当前行", lambda: self.start_generation(force=True))
         self.advanced_widgets.append(self.regenerate)
@@ -362,6 +359,8 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.stop_generation.setEnabled(False)
         actions.addStretch()
         self.preview = self.button(actions, "试听当前行", self.start_preview)
+        self.preview.setMinimumHeight(40)
+        self.preview.setCursor(QtCore.Qt.PointingHandCursor)
         self.stop_preview = self.button(actions, "停止试听", self.cancel_preview, idle=False)
         self.stop_preview.setEnabled(False)
         self.generate.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
@@ -372,19 +371,17 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.progress = QtWidgets.QProgressBar()
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
-        self.progress.setFixedHeight(22)
-        self.progress.setTextVisible(True)
-        self.progress.setFormat("%v / %m")
+        self.progress.setMaximumHeight(12)
         outer.addWidget(self.progress)
         self.status = QtWidgets.QLabel('就绪' if self.game_id == 'wuwa' else "生成时不会播放声音。生成完成后，选择一行即可试听。")
         self.status.setWordWrap(True)
-        self.status.setObjectName("statusBar")
-        self.status.setMinimumHeight(36)
+        self.status.setMinimumHeight(28)
         outer.addWidget(self.status)
         self.project_label = QtWidgets.QLabel()
         self.project_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        self.project_label.setStyleSheet("color:#67798e; font-size:10px; padding:2px 0px;")
-        outer.addWidget(self.project_label)
+        self.project_label.setWordWrap(True)
+        self.project_label.setStyleSheet("color:#67798e; font-size:11px;")
+        tools_layout.addWidget(self.project_label)
         self.advanced_widgets.append(self.project_label)
         self.edit_timer = QtCore.QTimer(self)
         self.edit_timer.setSingleShot(True)
@@ -408,6 +405,13 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.show_text.toggled.connect(self.update_simple_view)
         self.advanced_toggle.toggled.connect(self.update_simple_view)
         self.update_simple_view()
+        fit_window_to_screen(self, 1180, 820)
+
+    def show_tools(self, expanded):
+        self.tools_panel.setVisible(expanded)
+        self.tools_toggle.setArrowType(QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow)
+        set_help(self.tools_toggle, '收起台词采集、导入、声线和项目操作。' if expanded else
+                 '展开台词采集、导入、声线管理、项目管理和导出操作。')
 
     def add_advanced_row(self, outer, row):
         widget = QtWidgets.QWidget()
@@ -421,7 +425,11 @@ class GeneratorWindow(QtWidgets.QDialog):
         advanced = not wuwa or self.advanced_toggle.isChecked()
         for widget in self.advanced_widgets:
             widget.setVisible(advanced)
-        self.editor.parentWidget().setVisible(advanced and (not wuwa or self.show_text.isChecked()))
+        self.tools_toggle.setVisible(advanced)
+        self.tools_panel.setVisible(advanced and self.tools_toggle.isChecked())
+        editor_visible = advanced and (not wuwa or self.show_text.isChecked())
+        self.editor.setVisible(editor_visible)
+        self.editor_scroll.setVisible(editor_visible)
         for column in (3, 6, 7):
             self.table.setColumnHidden(column, not advanced)
         if self.project:
@@ -434,15 +442,6 @@ class GeneratorWindow(QtWidgets.QDialog):
         if idle:
             self.idle_controls.append(button)
         return button
-
-    @staticmethod
-    def _add_separator(layout):
-        sep = QtWidgets.QFrame()
-        sep.setFrameShape(QtWidgets.QFrame.VLine)
-        sep.setFrameShadow(QtWidgets.QFrame.Sunken)
-        sep.setStyleSheet("color:#c4ccd6;")
-        sep.setFixedWidth(2)
-        layout.addWidget(sep)
 
     def busy(self):
         return bool((self.worker and self.worker.isRunning()) or
@@ -467,6 +466,8 @@ class GeneratorWindow(QtWidgets.QDialog):
         self.mode.blockSignals(False)
         self.refresh_voices()
         self.project_label.setText("自动保存位置：" + str(project.directory))
+        self.project_title.setText('项目 ' + project.directory.name)
+        set_help(self.project_title, str(project.directory), '当前项目')
         from dialogue_generation import atomic_text
         atomic_text(self.projects_root / "last-project.txt", str(project.directory))
         for row in project.rows:
@@ -577,32 +578,44 @@ class GeneratorWindow(QtWidgets.QDialog):
             for column, value in enumerate(values, 1):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setToolTip(row.error if column == 5 and row.error else reason if column == 3 and reason else value)
-                if column in (1, 3, 5, 7):
-                    item.setTextAlignment(QtCore.Qt.AlignCenter)
                 if column == 4:
                     item.setToolTip(full_voice_label)
                 if column == 7 and decision:
                     item.setToolTip(decision.detail)
                     if decision.needs_review:
-                        item.setForeground(QtGui.QColor("#a65c13"))
+                        item.setForeground(QtGui.QColor("#fbbf24"))
+                        item.setBackground(QtGui.QColor("#3b2b11"))
+                    else:
+                        item.setForeground(QtGui.QColor("#38bdf8"))
+                        item.setBackground(QtGui.QColor("#0f2942"))
                 if column == 3:
                     if reason:
-                        item.setForeground(QtGui.QColor("#a65c13"))
+                        item.setForeground(QtGui.QColor("#fbbf24"))
+                        item.setBackground(QtGui.QColor("#3b2b11"))
                     elif row.confirmed:
-                        item.setForeground(QtGui.QColor("#167d77"))
+                        item.setForeground(QtGui.QColor("#34d399"))
+                        item.setBackground(QtGui.QColor("#0d3323"))
+                    else:
+                        item.setForeground(QtGui.QColor("#38bdf8"))
+                        item.setBackground(QtGui.QColor("#0f2942"))
                 if column == 5:
                     if row.status == "failed":
-                        item.setForeground(QtGui.QColor("#b33e35"))
+                        item.setForeground(QtGui.QColor("#f87171"))
+                        item.setBackground(QtGui.QColor("#3b1319"))
                     elif row.status == "done":
-                        item.setForeground(QtGui.QColor("#137333"))
+                        item.setForeground(QtGui.QColor("#34d399"))
+                        item.setBackground(QtGui.QColor("#0d3323"))
                     elif row.status == "generating":
-                        item.setForeground(QtGui.QColor("#1a73e8"))
+                        item.setForeground(QtGui.QColor("#38bdf8"))
+                        item.setBackground(QtGui.QColor("#0f2942"))
+                if column in (3, 5, 7):
+                    item.setTextAlignment(QtCore.Qt.AlignCenter)
                 self.table.setItem(index, column, item)
         self.table.blockSignals(False)
         self.rendering = False
         ready = sum(row.selected and not row.punctuation_only and not row.review_reason() for row in self.project.rows)
         held = sum(row.selected and not row.punctuation_only and bool(row.review_reason()) for row in self.project.rows)
-        self.count_label.setText(f"共 {len(self.project.rows)} 条 · 文字就绪 {ready} 条 · 文字待核对 {held} 条 · 声线待核对 {voice_held} 条")
+        self.count_label.setText(f"共 {len(self.project.rows)} 条  ·  文字就绪 {ready} 条  ·  文字待核对 {held} 条  ·  声线待核对 {voice_held} 条")
         if quality:
             from wuwa_workflow import quality_label
             self.count_label.setText(self.count_label.text() + '\n' + quality_label(quality))
@@ -1190,18 +1203,16 @@ class GeneratorWindow(QtWidgets.QDialog):
 def main():
     parser = argparse.ArgumentParser(description="台词批量生成与试听")
     parser.add_argument("--project", type=Path)
+    parser.add_argument("--game", choices=['nte', 'wuwa'], help="首次打开的游戏工作台")
+    parser.add_argument("--organize", action='store_true', help="打开异环台词整理与配音准备页")
     parser.add_argument("--smoke-ms", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
     application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     configure_application(application)
-    try:
-        from wuwa_dubber.app import configure_chinese_font
-        configure_chinese_font(application)
-    except Exception:
-        font = application.font()
-        font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "SimSun"])
-        font.setPointSize(10)
-        application.setFont(font)
+    font = application.font()
+    font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "SimSun"])
+    font.setPointSize(10)
+    application.setFont(font)
     try:
         config = json.loads((ROOT / "config.json").read_text(encoding="utf-8-sig"))
         if args.project:
@@ -1215,7 +1226,13 @@ def main():
                 window = GeneratorWindow(config.get('dubbing', {}), project_path=args.project)
         else:
             from wuwa_ui import GameHome
-            window = GameHome()
+            from workbench_ipc import request_existing
+            selected_game = 'nte' if args.organize else args.game
+            if selected_game and request_existing(ROOT.parent/'game-data/entry.json',selected_game,library=args.organize):
+                return 0
+            window = GameHome(game_id=selected_game)
+            if args.organize:
+                window.nte.workspace_tabs.setCurrentIndex(1)
     except Exception as exc:
         QtWidgets.QMessageBox.warning(None, "台词生成工具未打开", str(exc))
         return 1

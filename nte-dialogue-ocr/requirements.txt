@@ -10,3 +10,4 @@ mss==10.2.0
 psutil==7.2.2
 sounddevice==0.5.6
 flatbuffers==25.12.19
+cryptography==46.0.3
