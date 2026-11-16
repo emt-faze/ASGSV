@@ -1,4 +1,5 @@
-param([switch]$Admin, [switch]$AutoConnect, [switch]$Dub, [switch]$Generate, [string]$Project)
+param([switch]$Admin, [switch]$AutoConnect, [switch]$Dub, [switch]$Generate, [string]$Project,
+      [ValidateSet('nte', 'wuwa')][string]$Game)
 $ErrorActionPreference = 'Stop'
 $ocrRoot = $PSScriptRoot
 $ocrPython = Join-Path $ocrRoot '.venv\Scripts\pythonw.exe'
@@ -20,6 +21,7 @@ if ($Generate) { $ocrScript = Join-Path $ocrRoot 'dialogue_generator_ui.py' }
 $ocrArguments = @(('"' + $ocrScript + '"'))
 if ($Generate) {
     if ($Project) { $ocrArguments += @('--project', ('"' + $Project + '"')) }
+    if ($Game) { $ocrArguments += @('--game', $Game) }
 } else {
     if ($AutoConnect) { $ocrArguments += '--autoconnect' }
     if ($Dub) { $ocrArguments += '--dub' }

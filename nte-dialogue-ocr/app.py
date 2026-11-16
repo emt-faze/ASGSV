@@ -52,7 +52,8 @@ def check_geometry(frame, config, client_size=None):
 
 def run_loop(window, config, stop, callback, seconds=None, on_capture=None, presentation_queue=None,
              on_record=None, on_state=None, on_session=None, on_observation=None, records_root=None,
-             on_frame_change=None, on_visual_observation=None, on_prefix_observation=None, on_full_frame=None):
+             on_frame_change=None, on_visual_observation=None, on_prefix_observation=None, on_full_frame=None,
+             frame_ready=None):
     from PySide6.QtCore import QLockFile
     directory = Path(records_root) if records_root is not None else ROOT
     directory.mkdir(parents=True, exist_ok=True)
@@ -63,14 +64,15 @@ def run_loop(window, config, stop, callback, seconds=None, on_capture=None, pres
     try:
         return _run_loop(window, config, stop, callback, seconds, on_capture, presentation_queue,
                          on_record, on_state, on_session, on_observation, directory, on_frame_change, on_visual_observation,
-                         on_prefix_observation, on_full_frame)
+                         on_prefix_observation, on_full_frame, frame_ready)
     finally:
         lease.unlock()
 
 
 def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, presentation_queue=None,
               on_record=None, on_state=None, on_session=None, on_observation=None, records_root=None,
-              on_frame_change=None, on_visual_observation=None, on_prefix_observation=None, on_full_frame=None):
+              on_frame_change=None, on_visual_observation=None, on_prefix_observation=None, on_full_frame=None,
+              frame_ready=None):
     from ocr_engines import make_ocr
     from frame_gate import FrameStability
     if getattr(window, 'game_id', 'nte') != config.get('game_id', 'nte'):
@@ -161,6 +163,8 @@ def _run_loop(window, config, stop, callback, seconds=None, on_capture=None, pre
                 stop.wait(.03)
                 continue
             last_sequence = packet.sequence
+            if frame_ready is not None and not frame_ready(packet):
+                continue
             if on_full_frame and on_full_frame(packet, engine) is False:
                 if on_state:
                     on_state('blank')
@@ -285,6 +289,7 @@ def run_connected(window, config, stop, callback, seconds=None, on_capture=None,
 
 
 def gui(autoconnect=False, dubbing=False):
+    from generator_ui_support import configure_application, configure_dialog, fit_window_to_screen, set_help
     from PySide6 import QtCore, QtGui, QtWidgets
     from ocr_core import crop_roi
     from game_launch import ensure_game, is_admin, relaunch_admin, activate_game
@@ -397,14 +402,26 @@ def gui(autoconnect=False, dubbing=False):
             self.history_items = {}
             self.latest_dialogue_id = None
             self.setWindowTitle("异环 · 游戏识别与自动配音")
-            self.resize(900, 850)
-            layout = QtWidgets.QVBoxLayout(self)
+            self.setMinimumSize(800, 540)
+            outer = QtWidgets.QVBoxLayout(self)
+            outer.setContentsMargins(16, 12, 16, 12)
+            outer.setSpacing(8)
+            self.content_scroll = QtWidgets.QScrollArea()
+            self.content_scroll.setWidgetResizable(True)
+            self.content_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            body = QtWidgets.QWidget()
+            layout = QtWidgets.QVBoxLayout(body)
+            layout.setContentsMargins(0, 0, 8, 0)
+            layout.setSpacing(10)
+            self.content_scroll.setWidget(body)
+            outer.addWidget(self.content_scroll, 1)
             title = QtWidgets.QLabel("异环 · 自动识别与角色配音")
-            title.setStyleSheet("font-size:24px; font-weight:600; padding:8px 0")
+            title.setStyleSheet("font-size:20px; font-weight:700; padding:4px 0")
             layout.addWidget(title)
             layout.addWidget(QtWidgets.QLabel("打开游戏 → 读取角色与台词 → 匹配声线 → 生成并播放语音"))
             row = QtWidgets.QHBoxLayout()
             self.connect_button = QtWidgets.QPushButton("一键打开游戏并开始")
+            self.connect_button.setObjectName('primary')
             self.connect_button.clicked.connect(self.connect_game)
             row.addWidget(self.connect_button, 1)
             self.path_button = QtWidgets.QPushButton("选择启动器")
@@ -494,15 +511,16 @@ def gui(autoconnect=False, dubbing=False):
             self.preview = QtWidgets.QLabel("尚未校准：等待实际游戏对话画面")
             self.preview.setAlignment(QtCore.Qt.AlignCenter)
             self.preview.setMinimumHeight(120)
-            self.preview.setStyleSheet("background:#17202a; color:#dce4ed; padding:8px")
+            self.preview.setStyleSheet("background:#172c43; color:#edf5fc; padding:8px; border-radius:8px;")
             layout.addWidget(self.preview)
             if self.config.get("calibrated"):
                 self.preview.setText("已载入剧情对话区域 · 启动后显示实时画面")
             self.status = QtWidgets.QLabel("已校准，可启动" if self.config.get("calibrated") else "等待校准正文区域")
             self.status.setWordWrap(True)
-            layout.addWidget(self.status)
+            outer.addWidget(self.status)
             row = QtWidgets.QHBoxLayout()
             self.start_button = QtWidgets.QPushButton("启动识别")
+            self.start_button.setObjectName('primary')
             self.start_button.clicked.connect(self.start)
             self.stop_button = QtWidgets.QPushButton("停止识别和配音")
             self.stop_button.clicked.connect(self.stop)
@@ -515,7 +533,7 @@ def gui(autoconnect=False, dubbing=False):
             generator_button.clicked.connect(self.open_generator)
             for button in (self.start_button, self.stop_button, records, review_button, generator_button):
                 row.addWidget(button)
-            layout.addLayout(row)
+            outer.addLayout(row)
             self.current = QtWidgets.QPlainTextEdit()
             self.current.setReadOnly(True)
             self.current.setPlaceholderText("当前识别结果会显示在这里")
@@ -523,12 +541,19 @@ def gui(autoconnect=False, dubbing=False):
             layout.addWidget(self.current)
             self.history = QtWidgets.QListWidget()
             self.history.setWordWrap(True)
+            self.history.setMinimumHeight(100)
             layout.addWidget(self.history, 1)
             layout.addWidget(QtWidgets.QLabel("WGC 可后台识别；最小化时暂停。已复核只表示两次检查通过，仍可能有误。"))
             self.preview_timer = QtCore.QTimer(self)
             self.preview_timer.timeout.connect(self.show_live_preview)
             self.preview_timer.start(round(1000/self.config.get("preview_fps", 2)))
             self.refresh()
+            configure_dialog(self, 'calibration')
+            set_help(self.backend_choice, '选择获取游戏画面的方式。WGC 支持在游戏位于后台时继续识别。', '画面获取方式')
+            set_help(self.ocr_choice, '选择字幕识别与复核方案，重新开始识别后应用。', '文字识别方案')
+            set_help(self.windows, '选择当前需要读取字幕的异环窗口。', '游戏窗口')
+            set_help(self.dub_policy, '选择在文字复核通过后配音，或在候选文字稳定时提前配音。', '配音时机')
+            set_help(self.voice_mode, '选择角色模型或系统中文朗读，按当前设置生成声音。', '声音来源')
             if autoconnect:
                 QtCore.QTimer.singleShot(300, self.connect_game)
 
@@ -559,6 +584,8 @@ def gui(autoconnect=False, dubbing=False):
 
         def pause_dubbing(self, paused):
             self.pause_voice.setText("继续配音" if paused else "暂停配音")
+            set_help(self.pause_voice, '恢复当前识别流程的配音播放。' if paused else
+                     '暂停当前识别流程的语音播放，点击同一按钮可以继续。')
             if self.worker:
                 (self.worker.voice_paused.set if paused else self.worker.voice_paused.clear)()
                 if self.worker.dubber:
@@ -870,12 +897,13 @@ def gui(autoconnect=False, dubbing=False):
     if not instance_lock.tryLock(5000):
         QtWidgets.QMessageBox.information(None, "异环对话识别", "识别窗口已在运行，请使用已打开的窗口。")
         return 0
-    application.setStyle("Fusion")
+    configure_application(application)
     font = application.font()
     font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "SimSun"])
     font.setPointSize(10)
     application.setFont(font)
     main = Main()
+    fit_window_to_screen(main, 1000, 820)
     main.show()
     return application.exec()
 
@@ -930,8 +958,17 @@ def main():
             stop = threading.Event()
             import signal
             signal.signal(signal.SIGINT, lambda *_: stop.set())
-            run_connected(windows[0], config, stop, lambda result: print(json.dumps(result, ensure_ascii=True), flush=True), args.seconds)
+            if args.dub and config.get('game_id', 'nte') == 'nte':
+                from nte_live import NteLiveSession
+                session = NteLiveSession(ROOT, config, lambda result: print(json.dumps(result, ensure_ascii=True), flush=True))
+                session.stop_event = stop
+                session.run(windows[0], seconds=args.seconds)
+            else:
+                run_connected(windows[0], config, stop, lambda result: print(json.dumps(result, ensure_ascii=True), flush=True), args.seconds)
         return 0
+    if args.dub and config.get('game_id', 'nte') == 'nte':
+        from nte_live_ui import show_live
+        return show_live(autoconnect=args.autoconnect)
     return gui(args.autoconnect, args.dub)
 
 

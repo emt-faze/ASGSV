@@ -8,7 +8,7 @@ import zipfile
 import build_release
 
 ROOT = Path(__file__).resolve().parents[1]
-DATE = (2026, 11, 3, 0, 0, 0)
+DATE = (2026, 11, 15, 0, 0, 0)
 
 
 def source_files(root=ROOT):
@@ -30,6 +30,11 @@ def source_files(root=ROOT):
                     if p.is_file() and p.suffix in {'.py','.md'} and '__pycache__' not in p.parts)
     selected.add(ocr/'validation/README.md')
     selected.update(ocr/'ww_log_decoder'/name for name in ('decoder.py','LICENSE','source.json'))
+    selected.update((ocr/'nte_organizer').glob('*.py'))
+    selected.update(ocr/'assets/nte-resource-reader'/name for name in
+                    ('LICENSE.CUE4Parse.Apache-2.0','LICENSE.UEExtractor',
+                     'reader.runtimeconfig.json','source.json','bundle.json'))
+    selected.update(root/name for name in ('安装异环配音.bat','打开异环配音.bat'))
     selected.update(root/name for name in ('launcher-source/Launcher.cs','launcher-source/build.ps1',
                                           'tools/launcher_button.ps1','安装鸣潮日志配音.bat',
                                           'tools/speech-cleanup/studio_clean.py',
@@ -45,6 +50,23 @@ def source_files(root=ROOT):
                       'voice-library-runtime.json','voice-library-source.json'}:
             raise ValueError('Local state is not a release input')
     return sorted(selected, key=lambda p:p.relative_to(root).as_posix())
+
+
+def verified_reader(root, directory):
+    manifest = json.loads((root/'nte-dialogue-ocr/assets/nte-resource-reader/bundle.json').read_text('utf-8'))
+    result = []
+    for item in manifest['files']:
+        relative = Path(item['path'])
+        if relative.is_absolute() or '..' in relative.parts or ':' in item['path'] or '\\' in item['path']:
+            raise ValueError('Invalid resource-reader path')
+        path = directory/relative
+        if not path.is_file() or path.is_symlink() or path.stat().st_size != item['bytes']:
+            raise ValueError('Missing resource-reader component: '+item['path'])
+        with path.open('rb') as stream:
+            if hashlib.file_digest(stream,'sha256').hexdigest() != item['sha256']:
+                raise ValueError('Resource-reader component checksum differs: '+item['path'])
+        result.append(('nte-dialogue-ocr/assets/nte-resource-reader/'+item['path'],path))
+    return result
 
 
 def verified_models(root, models_dir):
@@ -63,13 +85,19 @@ def verified_models(root, models_dir):
     return result
 
 
-def build(root=ROOT, *, output, models_dir=None):
+def build(root=ROOT, *, output, models_dir=None, reader_dir=None, launcher=None):
     version = (root/'nte-dialogue-ocr/GENERATOR_VERSION').read_text(encoding='ascii').strip()
     prefix = 'dialogue-generator-v'+version
     inputs = [(p.relative_to(root).as_posix(),p) for p in source_files(root)]
     variants = [('source',inputs)]
     if models_dir is not None:
-        variants.append(('windows-with-ocr-models', inputs + verified_models(root, models_dir)))
+        complete = inputs + verified_models(root, models_dir)
+        if reader_dir is not None:
+            existing = {name for name,path in complete}
+            complete += [(name,path) for name,path in verified_reader(root,reader_dir) if name not in existing]
+        if launcher is not None:
+            complete.append(('ASGSV.exe',launcher))
+        variants.append(('windows-with-ocr-models',complete))
     output.mkdir(parents=True,exist_ok=True)
     results = []
     for variant, files in variants:
@@ -84,6 +112,7 @@ def build(root=ROOT, *, output, models_dir=None):
                 bundle.writestr(entry,data)
             metadata = dict(generator_version=version,variant=variant,files=records,
                             includes_ocr_models=models_dir is not None and variant!='source',
+                            includes_nte_resource_reader=reader_dir is not None and variant!='source',
                             includes_tts_weights=False,includes_python_runtime=False,includes_personal_data=False)
             entry = zipfile.ZipInfo(prefix+'/FILE_MANIFEST.json',date_time=DATE)
             entry.compress_type = zipfile.ZIP_DEFLATED
@@ -105,5 +134,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT/'dist')
     parser.add_argument('--models-dir', type=Path)
+    parser.add_argument('--reader-dir', type=Path)
+    parser.add_argument('--launcher', type=Path)
     args = parser.parse_args()
-    print(json.dumps(build(output=args.output,models_dir=args.models_dir),ensure_ascii=False,indent=2))
+    print(json.dumps(build(output=args.output,models_dir=args.models_dir,
+        reader_dir=args.reader_dir,launcher=args.launcher),ensure_ascii=False,indent=2))

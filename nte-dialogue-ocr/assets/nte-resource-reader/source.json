@@ -1,0 +1,54 @@
+{
+  "ueextractor": {
+    "repository": "https://github.com/SolicenTEAM/UEExtractor",
+    "release": "v.1.0.8.8",
+    "release_zip_sha256": "8f76b455553e9a75c4070eae68eb95f24f461934f0769ed36b8505b5e4dbce93",
+    "assembly_origin": "Costura embedded assemblies from the release executable"
+  },
+  "cue4parse": {
+    "repository": "https://github.com/FabianFG/CUE4Parse",
+    "source_reference_commit": "d05e5859ad240be10c9d5c8344f5de7c072123d0"
+  },
+  "dotnet": {
+    "name": "dotnet-runtime-win-x64.zip",
+    "rid": "win-x64",
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.15/dotnet-runtime-10.0.15-win-x64.zip",
+    "hash": "06f0bedd59ae4ac722ada805a6d6bbf605bcdc790c71f59b7003878072902b5cde5dec8c40c0baa81192660d4748e9d79afdbdcb0c0ea9d6b821d0a044c4c6dd"
+  },
+  "pythonnet": "3.0.5",
+  "clr_loader": "0.2.10",
+  "cffi": "2.1.1",
+  "pycparser": "3.12",
+  "files": {
+    "assemblies/blake3.dll": "797ef7c1be7cd5c559e6558b47c94db5fe092deb778c878771cba51a3a6d33a3",
+    "assemblies/bouncycastle.cryptography.dll": "e5eeaf6d263c493619982fd3638e6135077311d08c961e1fe128f9107d29ebc6",
+    "assemblies/communitytoolkit.highperformance.dll": "196607c6d4d704b5ee95c80f8e3cd799595b7d8a08108701894c211b138d2839",
+    "assemblies/costura.dll": "7a9e767ad824afa2c1b0aed513fe1cf2b8dac6d40f24e7c4075af32b1cf23a20",
+    "assemblies/cue4parse.dll": "4142a856125501ce8da601663373e12b7b15fa0ddc0fbbd7e17948e42008967b",
+    "assemblies/fixedmathsharp.dll": "3c0240d67a3daef47ca007b7920a81edb40ac97f01f64cc5e96b45e4e8ba7fee",
+    "assemblies/fmod5sharp.dll": "5fd28433bee00c92c73763ee2ea310142197dabd86f762639e9ac04ed58168ac",
+    "assemblies/genericreader.dll": "92810aca50dc68d9e79361aeb96fb72e5f80104a147af39625c2bc5d0ff69d68",
+    "assemblies/indexrange.dll": "13b459a9725bf3ae42b26836613221468458952bf59f848b809c03ed60247fb1",
+    "assemblies/k4os.compression.lz4.dll": "e282aadc2353b864fe95cd5fb525a1a093d99a30a5bf2530b7ab831d56179816",
+    "assemblies/k4os.compression.lz4.streams.dll": "b146cf3c769000cd5e4458cfed5da3c0e838b7b2da6dbe6dad458cd5a0e3ce41",
+    "assemblies/k4os.hash.xxhash.dll": "19d73fa58c1f6c12c61f30eaad91881bd06f50caf4b462b061bc1b45d0a577cd",
+    "assemblies/memorypack.core.dll": "6dc7785eea92dc72b9ea4d9d9b08c585ce87c11ec6b8388d00a179af694cf6be",
+    "assemblies/microsoft.bcl.memory.dll": "23b6c3d9b202c2a013848d77d204d20e033605bb43ce89a9bf8f37d16951185b",
+    "assemblies/naudio.core.dll": "fcf493fc47a2f478a65303886b975fbdbf714cbb1f2d79f7fce97e4bb16b01a8",
+    "assemblies/newtonsoft.json.dll": "a28c251dfe36d881e9e2462e171441b8b0ec156fe3f452602c9149b1b9efe05b",
+    "assemblies/offiutils.dll": "2b45e1e594855cefbc707f9f4517a09263b6cb17b1062012c56d1666750e3f22",
+    "assemblies/oggvorbisencoder.dll": "5c3c602bed65fa22915d4d56fe62c3ed584dfaf48fd2c31b49519ed211f77ff1",
+    "assemblies/oodle.net.dll": "0a1eb8b3fd2247f7b958e437585fafaf907514d6041e58ecb58068eaa2e76f7c",
+    "assemblies/oodlesharp.dll": "c4885b763cfd4f5dc28ac663346f7efb0cc8d9229ca4c97ea3b76f87ea2d7091",
+    "assemblies/serilog.dll": "e6b551a75ff7fff20dd0024670d5c42dfb74afa16d54aa0201106dea400a9505",
+    "assemblies/serilog.sinks.console.dll": "dc88002ddd9f5fd0ffec9a6568ef89954671f60f2c9161593ee78932538c1e3e",
+    "assemblies/sevenzip.dll": "976dcd9850b04cae4c4980dd47d58758535f00df6b5ab5cb4fb416eb2c93b788",
+    "assemblies/substreamsharp.dll": "2f8928637fdf06b3ce7b6b72ee12a7cb29508c5e0ef4aba8125d046b21be0796",
+    "assemblies/system.io.hashing.dll": "1285c15b4719f4e63993db2b5e8662be07645e829bb5fcc926831a2851a94a64",
+    "assemblies/system.numerics.tensors.dll": "2a482195cd58352fc844b3f45628e7c4056187ebe2753e64ec53795abff3b9ea",
+    "assemblies/ue4config.dll": "79ef7a5b840cb0b337fe195746c08121dbc5e0c7862596ad44ad3d46137475ce",
+    "assemblies/vgaudio.dll": "e32c17ed422f5e6419050fe4bb43f752ed11c8a7796c45f693865237d8a200a3",
+    "assemblies/zlib-ng.net.dll": "f1746ed5806fe466af60938dfe7543ea524716816575fbb6a22d83cc0fc38673",
+    "assemblies/zstdsharp.dll": "b285bb9f59928becb8e048bf2a75e872f6555f8773d7b72386a9f77f447f425c"
+  }
+}

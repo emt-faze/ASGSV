@@ -1,5 +1,11 @@
 {
   "game_title": "异环",
+  "game_id": "nte",
+  "nte_hybrid": {
+    "game_root": "",
+    "player_name": "鉴定师",
+    "auto_start": false
+  },
   "launcher_path": "",
   "capture_backend": "wgc",
   "ocr_mode": "rapid_dual",
@@ -36,6 +42,7 @@
   "centered_body": true,
   "render_stable_seconds": 0.45,
   "dubbing": {
+    "game_id": "nte",
     "code_root": "../wuwa-dubber",
     "data_root": "../wuwa-dubber/data",
     "mode": "system",

@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 
 from PySide6 import QtCore, QtGui, QtWidgets as W
+from generator_ui_support import fit_window_to_screen
 
 from dialogue_generation import atomic_text
 from dialogue_dubbing import voice_paths
@@ -307,7 +308,7 @@ class VoiceBindingDialog(W.QDialog):
 
 
 class GameHome(W.QDialog):
-    def __init__(self, *, root=None, preference=None):
+    def __init__(self, *, root=None, preference=None, game_id=None):
         super().__init__()
         self.root = Path(root) if root is not None else initialize_wuwa()
         fresh_catalog = not (self.root/'dialogue.sqlite').exists()
@@ -333,25 +334,30 @@ class GameHome(W.QDialog):
         layout = W.QVBoxLayout(self)
         layout.setSpacing(12)
         top = W.QHBoxLayout()
+        top.setContentsMargins(4, 4, 4, 4)
+        top.setSpacing(10)
         title = W.QLabel('ASGSV 配音工作台')
         title_font = title.font()
-        title_font.setPointSize(16)
+        title_font.setPointSize(15)
         title_font.setBold(True)
         title.setFont(title_font)
+        title.setStyleSheet('color: #f1f5f9; font-weight: 700;')
         top.addWidget(title)
         self.game = W.QComboBox()
         self.game.addItem('鸣潮', 'wuwa')
         self.game.addItem('异环', 'nte')
+        self.game.setMinimumHeight(32)
         top.addWidget(self.game)
+        self.game_badge = W.QLabel('异环 NTE')
+        self.game_badge.setStyleSheet('background: #1e1b38; color: #a78bfa; border: 1px solid #4338ca; border-radius: 6px; padding: 2px 8px; font-weight: bold; font-size: 11px;')
+        top.addWidget(self.game_badge)
         top.addStretch()
-        self.settings = self.button(top, '设置', self.open_settings, W.QStyle.SP_FileDialogDetailedView)
-        self.button(top, '打开项目', self.open_existing, W.QStyle.SP_DirOpenIcon)
-        self.button(top, '继续上次项目', self.resume_project, W.QStyle.SP_MediaPlay)
+        self.settings = self.button(top, '设置', self.open_settings)
+        self.button(top, '打开项目', self.open_existing)
+        self.button(top, '继续上次项目', self.resume_project)
         self.advanced_toggle = W.QToolButton()
         self.advanced_toggle.setText('高级')
         self.advanced_toggle.setCheckable(True)
-        self.advanced_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        self.advanced_toggle.setIcon(self.style().standardIcon(W.QStyle.SP_FileDialogDetailedView))
         self.advanced_toggle.setToolTip('资源版本、台词索引、采集导入与任务进度核对')
         top.addWidget(self.advanced_toggle)
         layout.addLayout(top)
@@ -380,7 +386,7 @@ class GameHome(W.QDialog):
         self.probe_button = self.button(actions, '本机资源探测', self.start_probe, W.QStyle.SP_ComputerIcon)
         self.capture_import = self.button(actions, '导入采集', self.import_capture, W.QStyle.SP_DialogOpenButton)
         actions.addStretch()
-        self.stop = self.button(top, '停止', self.stop_job, W.QStyle.SP_MediaStop)
+        self.stop = self.button(top, '停止', self.stop_job)
         self.stop.setEnabled(False)
         advanced_layout.addLayout(actions)
         progress_actions = W.QHBoxLayout()
@@ -396,7 +402,7 @@ class GameHome(W.QDialog):
         advanced_layout.addLayout(progress_actions)
         body.addWidget(self.advanced)
         self.advanced.setVisible(False)
-        self.advanced_toggle.toggled.connect(self.advanced.setVisible)
+        self.advanced_toggle.toggled.connect(self.set_advanced)
         self.progress_summary = W.QLabel('任务进度未读取')
         self.progress_summary.setWordWrap(True)
         body.addWidget(self.progress_summary)
@@ -507,11 +513,22 @@ class GameHome(W.QDialog):
         self.play_prepared.setToolTip('打开最近准备完成的任务，识别游戏字幕并播放已有音频；不会推进剧情。')
         body.addLayout(playback_actions)
         layout.addWidget(self.wuwa, 1)
-        self.nte = W.QPushButton('打开异环台词生成工具')
-        self.nte.clicked.connect(self.open_nte)
-        layout.addWidget(self.nte)
+        from nte_home import NteHomePanel
+        self.nte = NteHomePanel(CODE_ROOT, self)
+        self.nte.project_requested.connect(self.open_nte)
+        self.nte.stopped.connect(self.live_stopped)
+        self.nte.busy_changed.connect(self.update_stop_button)
+        layout.addWidget(self.nte, 1)
         self.status = W.QLabel('就绪')
         self.status.setWordWrap(True)
+        self.status.setStyleSheet("""
+            background: #141722;
+            border: 1px solid #23293b;
+            border-radius: 6px;
+            padding: 8px 14px;
+            color: #94a3b8;
+            font-size: 12px;
+        """)
         layout.addWidget(self.status)
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
@@ -534,16 +551,23 @@ class GameHome(W.QDialog):
                 selected = json.loads(self.preference.read_text(encoding='utf-8')).get('game_id', selected)
             except ValueError:
                 pass
+        if game_id is not None:
+            from game_profiles import validate_game
+            selected = validate_game(game_id)
         self.game.setCurrentIndex(max(0, self.game.findData(selected)))
         self.refresh_all()
         self.switch_game()
         self.refresh_progress()
         from generator_ui_support import configure_dialog
         configure_dialog(self, 'generator')
+        from workbench_ipc import WorkbenchRequests
+        self.requests = WorkbenchRequests(self.preference,self)
+        self.requests.requested.connect(self.request_workspace)
 
-    def button(self, row, title, callback, icon):
+    def button(self, row, title, callback, icon=None):
         button = W.QPushButton(title)
-        button.setIcon(self.style().standardIcon(icon))
+        if icon is not None:
+            button.setIcon(self.style().standardIcon(icon))
         button.clicked.connect(callback)
         row.addWidget(button)
         return button
@@ -555,11 +579,55 @@ class GameHome(W.QDialog):
         wuwa = self.game.currentData() == 'wuwa'
         if not wuwa and self.live.running():
             self.live.stop_live()
+        if wuwa and self.nte.live.running():
+            self.nte.live.stop_live()
         self.wuwa.setVisible(wuwa)
         self.nte.setVisible(not wuwa)
-        self.settings.setEnabled(wuwa)
-        self.advanced_toggle.setVisible(wuwa)
+        if hasattr(self, 'game_badge'):
+            if wuwa:
+                self.game_badge.setText('鸣潮 Wuthering Waves')
+                self.game_badge.setStyleSheet('background: #1e1b38; color: #a78bfa; border: 1px solid #4338ca; border-radius: 6px; padding: 2px 8px; font-weight: bold; font-size: 11px;')
+            else:
+                self.game_badge.setText('异环 NTE')
+                self.game_badge.setStyleSheet('background: #1e1b38; color: #a78bfa; border: 1px solid #4338ca; border-radius: 6px; padding: 2px 8px; font-weight: bold; font-size: 11px;')
+        self.settings.setEnabled(True)
+        self.advanced_toggle.setVisible(True)
+        self.stop.setVisible(True)
+        self.setWindowTitle('ASGSV · ' + ('鸣潮' if wuwa else '异环') + '配音工作台')
+        self.setMinimumSize(960, 680)
+        if not self.isMaximized():
+            fit_window_to_screen(self, self.width(), 840)
+        if not wuwa:
+            self.nte.refresh()
+        if not self.nte.live.running():
+            self.nte.live.start.setEnabled(not self.live.running() and not self.nte.busy())
+        if not self.live.running():
+            self.live.start.setEnabled(not self.nte.live.running())
+        self.update_stop_button()
         atomic_text(self.preference, json.dumps({'game_id': self.game.currentData()}))
+
+    def set_advanced(self, visible):
+        self.advanced.setVisible(visible)
+        self.nte.advanced.setVisible(visible)
+
+    def update_stop_button(self, *_):
+        running = self.nte.busy() if self.game.currentData()=='nte' else bool(self.worker and self.worker.isRunning())
+        self.stop.setEnabled(running)
+
+    def request_workspace(self, game_id, library=False):
+        if self.closing:
+            return
+        self.game.setCurrentIndex(self.game.findData(game_id))
+        if library:
+            tabs = self.nte.workspace_tabs if game_id=='nte' else self.workspace_tabs
+            tabs.setCurrentIndex(1)
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if self.child:
+            self.child.raise_()
+            self.child.activateWindow()
 
     def show_live_task(self, scope):
         row = self.catalog.db.execute('SELECT name FROM scopes WHERE id=?', (scope,)).fetchone()
@@ -577,10 +645,18 @@ class GameHome(W.QDialog):
                 break
 
     def live_stopped(self):
+        if not self.nte.live.running():
+            self.nte.live.start.setEnabled(not self.live.running() and not self.nte.busy())
+        if not self.live.running():
+            self.live.start.setEnabled(not self.nte.live.running())
+        self.update_stop_button()
         if self.closing:
             self.close()
 
     def open_settings(self):
+        if self.game.currentData() == 'nte':
+            self.nte.open_live(dubbing=False)
+            return
         SettingsDialog(self.root, self).exec()
         self.refresh_lines()
 
@@ -938,16 +1014,27 @@ class GameHome(W.QDialog):
             self.child = None
             self.refresh_prepared()
 
-    def open_nte(self):
+    def open_nte(self, path=None, action='prepare'):
+        if self.nte.busy():
+            self.nte.defer_project(path,action)
+            return
+        selected_path = path
         try:
             from dialogue_generator_ui import GeneratorWindow
             config = json.loads((CODE_ROOT / 'config.json').read_text(encoding='utf-8-sig'))
-            self.child = GeneratorWindow(config.get('dubbing', {}), self)
+            self.child = GeneratorWindow(dict(config.get('dubbing', {}), game_id='nte'), self,
+                                         root=CODE_ROOT, project_path=path)
+            if action == 'collect':
+                QtCore.QTimer.singleShot(0, self.child.open_ocr)
+            elif action == 'playback':
+                QtCore.QTimer.singleShot(0, self.child.open_playback)
             self.child.exec()
+            selected_path = self.child.project.directory
         except Exception as exc:
             self.status.setText(str(exc))
         finally:
             self.child = None
+            self.nte.refresh(project_path=selected_path)
 
     def resume_project(self):
         try:
@@ -960,7 +1047,10 @@ class GameHome(W.QDialog):
 
     def open_existing(self):
         if self.game.currentData() == 'nte':
-            self.open_nte()
+            path, _ = W.QFileDialog.getOpenFileName(self, '打开异环项目',
+                str(CODE_ROOT / 'generation-projects'), '项目 (project.json)')
+            if path:
+                self.open_nte(Path(path))
             return
         path, _ = W.QFileDialog.getOpenFileName(self, '打开鸣潮项目', str(self.root / 'generation-projects'), '项目 (project.json)')
         if path:
@@ -1019,6 +1109,9 @@ class GameHome(W.QDialog):
             self.child = None
 
     def stop_job(self):
+        if self.game.currentData()=='nte':
+            self.nte.stop()
+            return
         if self.worker:
             self.worker.stop.set()
             self.status.setText('正在停止…')
@@ -1037,6 +1130,11 @@ class GameHome(W.QDialog):
         self.close()
 
     def closeEvent(self, event):
+        if self.nte.busy():
+            self.closing = True
+            self.nte.stop()
+            event.ignore()
+            return
         if self.live.running():
             self.closing = True
             self.live.stop_live()
@@ -1047,7 +1145,11 @@ class GameHome(W.QDialog):
             self.stop_job()
             event.ignore()
             return
+        if not self.nte.shutdown():
+            event.ignore()
+            return
         self.live.jobs.close()
+        self.requests.close()
         self.catalog.close()
         self.live.timer.stop()
         self.lock.unlock()

@@ -71,6 +71,16 @@ def make_ocr(config):
         first, review = RapidModel("small"), RapidModel("medium")
     else:
         first = review = _build_engine(DEFAULT_ENGINE_OPTIONS)
+    if config.get('ocr_warmup'):
+        import cv2
+        import numpy as np
+        sample = np.zeros((80, 480, 3), dtype=np.uint8)
+        cv2.putText(sample, 'NTE 123 warmup', (12, 54), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+        for model in dict.fromkeys((first, review)):
+            model(sample, use_cls=False)
+            if hasattr(model, 'recognize_line'):
+                model.recognize_line(sample)
     return DialogueOCR(
         config["body_roi"], config.get("speaker_roi"),
         engine=first, review_engine=review, ocr_profile=PROFILES[mode][1],

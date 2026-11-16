@@ -32,3 +32,13 @@ medium 模型另核对官方模型卡（2026-10-30，均标注 Apache-2.0）：
 ## 运行依赖
 
 其他依赖包括 ONNX Runtime、OpenCV、PySide6、windows-capture、MSS、NumPy、pywin32 和 psutil。安装版本记录在 `requirements.txt`，各依赖适用各自许可证。发布压缩包不包含这些依赖的已安装虚拟环境，也不包含 Windows 字体或游戏客户端。
+
+## 异环本地资源读取
+
+- 资源读取组件来自 UEExtractor v.1.0.8.8 发布包，MIT 许可文件随组件保存在 `assets/nte-resource-reader/LICENSE.UEExtractor`。[UEExtractor](https://github.com/SolicenTEAM/UEExtractor)
+- CUE4Parse 负责读取异环资源包和中文本地化表，Apache-2.0 许可文件随组件保存为 `LICENSE.CUE4Parse.Apache-2.0`。组件源文件、发布包校验值和本地文件校验值记录在同目录的 `source.json`。[CUE4Parse](https://github.com/FabianFG/CUE4Parse)
+- 独立 .NET 10.0.15 运行时保留其 `LICENSE.txt` 与 `ThirdPartyNotices.txt`。Python.NET、clr_loader、cffi 与 pycparser 保留安装包元数据和随包许可文件。
+- 异环日志解码使用 cryptography 46.0.3。日志格式参考 CUE4Parse 的异环解码实现。[日志解码参考](https://github.com/FabianFG/CUE4Parse/blob/d05e5859ad240be10c9d5c8344f5de7c072123d0/CUE4Parse/GameTypes/NTE/Encryption/NevernessToEvernessIniEncryption.cs)
+- 国服资源密钥采用公开资料中用于本地资源读取的取值。[资料来源](https://gamebanana.com/tuts/19765)
+
+`nte-data/catalog.sqlite` 由本机已安装游戏的中文资源构建。游戏文本的权利归其原权利人所有。

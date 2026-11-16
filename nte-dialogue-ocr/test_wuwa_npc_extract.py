@@ -10,11 +10,6 @@ import wuwa_npc_audio as audio
 import wuwa_npc_extract as extraction
 
 
-TOOLS = Path(__file__).resolve().parents[1] / "tools"
-PROBE = TOOLS / "npc-audio-probe/bin/Release/net10.0/NpcProbe.dll"
-DOTNET = TOOLS / "dotnet10/dotnet.exe"
-
-
 class NpcExtractionTests(unittest.TestCase):
     def test_candidate_selection_is_bounded_deduplicated_and_explicit(self):
         rows, texts = [], {}
@@ -85,13 +80,13 @@ class NpcExtractionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     extraction.decode_candidate(*args)
 
-    @unittest.skipUnless(PROBE.is_file() and DOTNET.is_file(), 'Optional .NET probe unavailable')
+    @unittest.skipUnless(Path(r'F:\Dubbing\DG\tools\npc-audio-probe\bin\Release\net10.0\NpcProbe.dll').exists(), 'Optional .NET probe unavailable')
     def test_exporter_rejects_cross_game_request(self):
         with tempfile.TemporaryDirectory() as temp:
             request = Path(temp) / 'request.json'
             request.write_text(json.dumps(dict(game_id='nte')), encoding='utf-8')
-            p = subprocess.run([str(DOTNET),
-                str(PROBE),
+            p = subprocess.run([r'F:\Dubbing\DG\tools\dotnet10\dotnet.exe',
+                r'F:\Dubbing\DG\tools\npc-audio-probe\bin\Release\net10.0\NpcProbe.dll',
                 '--npc-export', str(request)], capture_output=True, text=True, encoding='utf-8', timeout=10)
             self.assertEqual(p.returncode, 2)
             self.assertIn('Only WuWa', json.loads(p.stdout)['error'])
@@ -102,8 +97,8 @@ class NpcExtractionTests(unittest.TestCase):
             request = Path(temp) / 'request.json'
             request.write_text(json.dumps(dict(game_id='wuwa', key_file=str(extraction.KEY_FILE),
                 entries=[dict(archive=str(Path(temp)/'outside.pak'), virtual_path='unused', filename='unused')])), encoding='utf-8')
-            p = subprocess.run([str(DOTNET),
-                str(PROBE),
+            p = subprocess.run([r'F:\Dubbing\DG\tools\dotnet10\dotnet.exe',
+                r'F:\Dubbing\DG\tools\npc-audio-probe\bin\Release\net10.0\NpcProbe.dll',
                 '--npc-export', str(request)], capture_output=True, text=True, encoding='utf-8', timeout=10)
             self.assertEqual(p.returncode, 2)
             self.assertIn('permitted root', json.loads(p.stdout)['error'])
