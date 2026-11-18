@@ -2,7 +2,7 @@
 
 ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对白补上配音。它通过游戏日志定位当前台词。翻页时会停止上一句，迟到的合成结果会保存下来供下次使用。
 
-**[下载鸣潮 v0.4.15 Windows x64 便携版](https://github.com/emt-faze/ASGSV/releases/download/wuwa-v0.4.15/ASGSV-v0.4.15-Windows-x64-Portable.zip)** · [发布说明及 SHA-256 校验](https://github.com/emt-faze/ASGSV/releases/tag/wuwa-v0.4.15)
+**[下载鸣潮 v0.4.16 Windows x64 便携版](https://github.com/emt-faze/ASGSV/releases/download/wuwa-v0.4.16/ASGSV-v0.4.16-Windows-x64-Portable.zip)** · [发布说明及 SHA-256 校验](https://github.com/emt-faze/ASGSV/releases/tag/wuwa-v0.4.16)
 
 ## 解压即用
 
@@ -17,7 +17,7 @@ ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对�
 
 这 181 句预配音可在匹配的中文游戏资源版本上播放，无需配置合成账号。要补配其他任务，在左侧打开 **任务库**，选中任务后点 **一键生成本任务配音**。使用 BreezeBlue 时，在 **设置** 填入自己的密钥和每日预算。本地角色合成需要另行准备模型。[本地模型安装](docs/模型安装.md)
 
-## v0.4.15 功能
+## v0.4.16 功能
 
 - **实时配音** 根据游戏日志换句，显示当前任务、对白、播放进度和最近记录。点击历史对白可重听。
 - **任务库** 按已配音和未配音筛选，支持搜索、试听当前句和批量补齐。
@@ -38,7 +38,7 @@ ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对�
 
 ## 从源码安装与打包
 
-从源码运行时，双击根目录的 **安装鸣潮日志配音.bat**，等安装完成后运行 **打开台词生成工具.bat**。安装器会自动准备官方 Python 3.12.8 和 pip，依赖优先尝试清华镜像，失败后使用官方 PyPI。新构建的便携版已内置同一套独立运行环境，位于 `runtime\python\`。已发布的首版 v0.4.15 ZIP 将解释器放在 `runtime\`，使用包内的启动器即可。
+从源码运行时，双击根目录的 **安装鸣潮日志配音.bat**，等安装完成后运行 **打开台词生成工具.bat**。安装器会自动准备官方 Python 3.12.8 和 pip，依赖优先尝试清华镜像，失败后使用官方 PyPI。v0.4.16 便携版已内置同一套独立运行环境和 pip，位于 `runtime\python\`。早期版本仍可从旧发布页下载。
 
 开发者可先运行 `scripts\ensure_embedded_python.bat`，再从仓库根目录构建。需要提供已校验的 OCR 模型和用于公开发布的任务音频目录。
 
