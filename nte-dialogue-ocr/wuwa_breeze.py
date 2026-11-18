@@ -153,15 +153,22 @@ def line_direction(catalog,line_id,cloud_voice):
     return catalog.meta(f'breeze_direction:{line_id}:{cloud_voice}', DIRECTION)
 
 
-def spoken_text(text):
+def strip_asides(text):
     return re.sub(r'（\*[^*（）]+\*）', '', text).strip()
 
 
-def recipe(text,cloud_voice,direction=DIRECTION):
+def spoken_text(text,root=None):
+    from wuwa_pronunciation import tts_text
+    return tts_text(strip_asides(text), root)
+
+
+def recipe(text,cloud_voice,direction=DIRECTION,*,spoken=None):
+    if spoken is None:
+        spoken = spoken_text(text)
     inputs = dict(provider='BreezeBlue',voice_id=cloud_voice,text=text,model=MODEL,
                   language='zh',direction=direction,format='wav_24000')
-    if spoken_text(text) != text:
-        inputs['spoken_text'] = spoken_text(text)
+    if spoken != text:
+        inputs['spoken_text'] = spoken
     return digest(inputs)
 
 
@@ -170,9 +177,11 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def fetch_wav(text,cloud_voice,key,direction=DIRECTION):
+def fetch_wav(text,cloud_voice,key,direction=DIRECTION,spoken=None):
+    if spoken is None:
+        spoken = spoken_text(text)
     req=Request('https://api.breeze.blue/v1/text-to-speech/'+voice_id(cloud_voice)+'?output_format=wav_24000',
-        data=json.dumps(dict(text=spoken_text(text),model_id=MODEL,language_code='zh',instructions=direction)).encode('utf-8'),
+        data=json.dumps(dict(text=spoken,model_id=MODEL,language_code='zh',instructions=direction)).encode('utf-8'),
         headers={'xi-api-key':key,'Content-Type':'application/json','Accept':'audio/wav'},method='POST')
     with build_opener(NoRedirect()).open(req,timeout=55) as response:
         if response.status!=200:
@@ -183,8 +192,10 @@ def fetch_wav(text,cloud_voice,key,direction=DIRECTION):
         return data
 
 
-def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION):
-    key=recipe(text,cloud_voice,direction)
+def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoken=None):
+    if spoken is None:
+        spoken = spoken_text(text, catalog.root)
+    key=recipe(text,cloud_voice,direction,spoken=spoken)
     folder=catalog.root/'cache/breezeblue'
     folder.mkdir(parents=True,exist_ok=True)
     path=folder/(key+'.wav')
@@ -205,12 +216,12 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION):
         today=date.today().isoformat()
         spent=db.execute('SELECT COALESCE(SUM(units),0) FROM breeze_calls WHERE day=?',(today,)).fetchone()[0]
         # Reserve the documented maximum weight (2 units) for each character.
-        units=2*len(text)
+        units=2*len(spoken)
         if not allow_charge():
             raise ValueError('字幕或声线已变化，已跳过云端补录')
         if not limit or spent+units>limit:
             raise ValueError('BreezeBlue 今日预算不足')
-        if not 1<=len(text)<=1000:
+        if not 1<=len(spoken)<=1000:
             raise ValueError('台词超出云端单次长度')
         secret=api_key()
         if not secret:
@@ -229,7 +240,7 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION):
             with db:
                 db.execute('DELETE FROM breeze_calls WHERE cache_key=?',(key,))
             raise
-        data=fetch_wav(text,cloud_voice,secret,direction)
+        data=fetch_wav(text,cloud_voice,secret,direction,spoken)
         staging.write_bytes(data)
         check_audio(staging)
         with wave.open(str(staging),'rb') as handle:

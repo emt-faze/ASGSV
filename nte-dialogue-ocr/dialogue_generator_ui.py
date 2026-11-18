@@ -10,11 +10,12 @@ import threading
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from asgsv_identity import application_icon
 from dialogue_dubbing import ROOT, VoiceRuntime, voice_paths
 from dialogue_generation import BatchGenerator, GenerationProject, latest_record, select_voice
 from system_voices import PRESETS
 from generator_voice_review import describe_voice, uncertain_rows, apply_voice_choices, review_dialog
-from generator_ui_support import configure_application, configure_dialog, set_help
+from generator_ui_support import STUDIO_SERIF, configure_application, configure_dialog, set_help, studio_font
 
 
 STATE_NAMES = {"pending": "待生成", "generating": "生成中", "done": "已完成",
@@ -112,6 +113,7 @@ class AudioPreviewWorker(QtCore.QThread):
 class GeneratorWindow(QtWidgets.QDialog):
     def __init__(self, options, parent=None, *, root=ROOT, project_path=None):
         super().__init__(parent)
+        self.setWindowIcon(application_icon())
         self.root = Path(root)
         self.options = dict(options)
         self.cloud_only = False
@@ -153,7 +155,8 @@ class GeneratorWindow(QtWidgets.QDialog):
         # ── 标题区 ──────────────────────────────────────────────
         header_row = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("鸣潮 · 配音准备" if self.game_id == "wuwa" else "台词生成工具")
-        title.setStyleSheet("font-size:22px; font-weight:700; color:#172c43; letter-spacing:1px;")
+        title.setFont(studio_font(STUDIO_SERIF, 27, QtGui.QFont.Weight.Bold, tracking=1.2))
+        title.setStyleSheet("color:#183832;")
         header_row.addWidget(title)
         header_row.addStretch()
         # 项目管理按钮放到标题栏右侧
@@ -1192,7 +1195,8 @@ def main():
     parser.add_argument("--project", type=Path)
     parser.add_argument("--smoke-ms", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    from asgsv_identity import create_application
+    application = create_application(sys.argv)
     configure_application(application)
     try:
         from wuwa_dubber.app import configure_chinese_font

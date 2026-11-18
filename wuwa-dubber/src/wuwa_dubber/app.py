@@ -76,11 +76,18 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
-    app = QApplication(sys.argv[:1])
+    workbench = Path(__file__).resolve().parents[3] / "nte-dialogue-ocr"
+    if (workbench / "asgsv_identity.py").is_file():
+        sys.path.append(str(workbench))
+        from asgsv_identity import create_application
+        app = create_application(sys.argv[:1])
+    else:
+        app = QApplication(sys.argv[:1])
     app.setApplicationName("异环 AI 配音")
     app.setOrganizationName("LocalOnly")
     configure_chinese_font(app)
     window = MainWindow(paths, config, store)
+    window.setWindowIcon(app.windowIcon())
     window.show()
     return app.exec()
 

@@ -1,8 +1,10 @@
 """Initialize portable generator paths without changing existing user settings."""
+import argparse
 from pathlib import Path
 import json
 from datetime import datetime, timezone
 import shutil
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,4 +34,14 @@ def configure(root=ROOT):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--portable', action='store_true')
+    args = parser.parse_args()
+    if args.portable:
+        sys.path.insert(0, str(ROOT / 'wuwa-dubber/src'))
+        from wuwa_dubber.config import AppPaths, load_config
+
+        paths = AppPaths(ROOT / 'wuwa-dubber/data')
+        if not paths.config.is_file():
+            load_config(paths)
     print(json.dumps(configure()))

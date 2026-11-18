@@ -146,6 +146,22 @@ class LiveUiTests(unittest.TestCase):
         self.panel.active_run='current'
         self.addCleanup(self.panel.close)
 
+    def test_history_matches_recording_by_id_speaker_and_text(self):
+        from PySide6.QtCore import Qt
+        from prepared_playback import PreparedLine
+        for number, speaker in enumerate(('甲', '旁白')):
+            self.panel.receive(dict(run_id='current', observation=dict(
+                catalog_id=str(number), speaker=speaker, body='好。')))
+        self.assertFalse(self.panel.preview.property('named'))
+        first = self.panel.history.item(1)
+        second = self.panel.history.item(0)
+        self.assertFalse(second.flags() & Qt.ItemIsEnabled)
+        clip = PreparedLine('row', '好。', '甲', 'B', self.root/'local.wav', '', True, '0')
+        self.panel.receive(dict(run_id='current', history_clip=clip))
+        self.assertTrue(first.flags() & Qt.ItemIsEnabled)
+        self.assertFalse(second.flags() & Qt.ItemIsEnabled)
+        self.assertEqual(first.data(Qt.UserRole + 1), clip)
+
     def test_stale_session_events_do_not_change_task_or_play_count(self):
         original=self.panel.task.text()
         self.panel.receive(dict(run_id='old',task=dict(state='confirmed',name='Wrong',basis='old'),
@@ -159,6 +175,16 @@ class LiveUiTests(unittest.TestCase):
         self.assertEqual(config['dubbing'],{'voice':'B'})
         self.assertEqual(config['other'],123)
         self.assertFalse(config['live_auto_start'])
+
+    def test_late_completion_for_identical_text_preserves_current_speaker_and_audio(self):
+        self.panel.receive(dict(run_id='current', observation=dict(catalog_id='next', speaker='乙', body='好。')))
+        self.panel.receive(dict(run_id='current', playback=dict(
+            state='playing', catalog_id='next', text='好。', message='正在播放乙的台词')))
+        self.panel.receive(dict(run_id='current', playback=dict(
+            state='completed', catalog_id='previous', text='好。', message='甲的台词已结束')))
+        self.assertEqual(self.panel.preview.text(), '乙')
+        self.assertEqual(self.panel.audio_status.text(), '正在播放乙的台词')
+        self.assertEqual(self.panel.last_playback['catalog_id'], 'next')
 
     def test_current_task_is_invalidated_when_log_session_exits(self):
         self.panel.receive(dict(run_id='current',task=dict(state='confirmed',id='quest:1',name='任务甲',basis='log')))

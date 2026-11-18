@@ -48,6 +48,28 @@ class CostTests(unittest.TestCase):
         key.start()
         self.addCleanup(key.stop)
 
+    def test_pronunciation_is_literal_single_pass_and_part_of_the_request_key(self):
+        path = self.c.root / 'config.json'
+        def dictionary(terms):
+            path.write_text(json.dumps({'tts_pronunciations': terms}), encoding='utf-8')
+        dictionary({'声': '升', '声骸': '孩', '孩': '海', '.': '点'})
+        text = '声骸.声（*小声*）'
+        with patch.object(breeze, 'build_opener') as opener:
+            post = opener.return_value.open
+            response = post.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = wav()
+            first, hit = breeze.cached_wav(self.c, text, 'voice', lambda: True)
+            self.assertFalse(hit)
+            self.assertEqual(json.loads(post.call_args.args[0].data)['text'], '孩点升')
+            dictionary({})
+            second, hit = breeze.cached_wav(self.c, text, 'voice', lambda: True)
+            self.assertFalse(hit)
+            self.assertNotEqual(first, second)
+            self.assertEqual(json.loads(post.call_args.args[0].data)['text'], '声骸.声')
+            self.assertTrue(breeze.cached_wav(self.c, text, 'voice', lambda: True)[1])
+            self.assertEqual(post.call_count, 2)
+
     def test_one_paid_call_then_verified_disk_reuse_even_at_limit(self):
         with patch.object(breeze,'fetch_wav',return_value=wav()) as post:
             for hit in (False,True):

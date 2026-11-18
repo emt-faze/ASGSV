@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from types import SimpleNamespace
 
 from dialogue_generation import file_digest
@@ -87,6 +88,48 @@ class LogPlaybackTests(unittest.TestCase):
                 self.assertEqual(trace,[('start','1'),('end','1'),('start','2')])
             finally:
                 output.close()
+
+    def test_history_uses_one_output_without_replacing_the_live_line(self):
+        with tempfile.TemporaryDirectory() as folder:
+            lines = []
+            for index in range(3):
+                path = Path(folder) / f'{index}.wav'
+                with wave.open(str(path), 'wb') as wav:
+                    wav.setparams((1, 2, 8000, 0, 'NONE', ''))
+                    wav.writeframes(bytes(16000))
+                lines.append(PreparedLine(str(index), '相同台词', str(index), 'B', path,
+                                          file_digest(path), True, str(index)))
+            events = queue.Queue()
+
+            class Player:
+                def play(self, path, cancel_event, on_started):
+                    on_started()
+                    cancel_event.wait(3)
+
+            output = LogPlayback(Player(), events.put)
+            self.addCleanup(output.close)
+
+            def expect(state, line, history):
+                event = events.get(timeout=2)
+                self.assertEqual((event['state'], event['catalog_id'], event['history']),
+                                 (state, line.catalog_id, history))
+                return event
+
+            first, current, following = lines
+            output.available(current)
+            start = expect('playing', current, False)
+            self.assertEqual(start['duration'], 1)
+            self.assertTrue(output.audition(first))
+            self.assertEqual(expect('interrupted', current, False)['started_at'], start['started_at'])
+            expect('playing', first, True)
+            self.assertIs(output.line, current)
+            output.clear()
+            output.available(following)
+            expect('interrupted', first, True)
+            expect('playing', following, False)
+            output.pause(True)
+            self.assertFalse(output.audition(first))
+            output.close()
 
     def test_generation_finishing_after_page_turn_is_saved_only(self):
         worker=LogWorker(Path('.'))

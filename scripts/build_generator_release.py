@@ -29,6 +29,8 @@ def source_files(root=ROOT):
     selected.update(p for p in (root/'tools/voice-library').rglob('*')
                     if p.is_file() and p.suffix in {'.py','.md'} and '__pycache__' not in p.parts)
     selected.add(ocr/'validation/README.md')
+    selected.update(ocr/'ui'/name for name in ('icons.py', 'workbench.py', 'stage_background.py', 'stage_voices.py'))
+    selected.update(ocr/'assets'/name for name in ('dialogue-coast.jpg', 'dialogue-preview.flac'))
     selected.update(ocr/'ww_log_decoder'/name for name in ('decoder.py','LICENSE','source.json'))
     selected.update(root/name for name in ('launcher-source/Launcher.cs','launcher-source/build.ps1',
                                           'tools/launcher_button.ps1','安装鸣潮日志配音.bat',

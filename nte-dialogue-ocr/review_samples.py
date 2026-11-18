@@ -9,7 +9,8 @@ from dialogue_store import atomic_text
 
 def main():
     from PySide6 import QtCore, QtGui, QtWidgets
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    from asgsv_identity import create_application
+    app = create_application(sys.argv)
     font=app.font()
     font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "SimSun"])
     font.setPointSize(10)

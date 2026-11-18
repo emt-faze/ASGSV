@@ -865,7 +865,8 @@ def gui(autoconnect=False, dubbing=False):
                     return
             event.accept()
 
-    application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    from asgsv_identity import create_application
+    application = create_application(sys.argv)
     instance_lock = QtCore.QLockFile(str(ROOT / "app.lock"))
     if not instance_lock.tryLock(5000):
         QtWidgets.QMessageBox.information(None, "异环对话识别", "识别窗口已在运行，请使用已打开的窗口。")

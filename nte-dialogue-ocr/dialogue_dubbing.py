@@ -344,7 +344,12 @@ class DubbingController:
                 profile, fallback = self.runtime.select_profile(record)
                 self._emit("generating", f"{record.get('speaker') or '未识别角色'} → {profile.speaker}" + ("（默认声线）" if fallback else ""),
                            record, voice=profile.speaker, fallback=fallback)
-                utterance = Utterance(record["body"], speaker=profile.speaker, source="nte-ocr",
+                synthesis_text = record["body"]
+                options = getattr(self.runtime, "options", {})
+                if options.get("game_id") == "wuwa":
+                    from wuwa_pronunciation import tts_text
+                    synthesis_text = tts_text(synthesis_text, options.get("catalog_root"))
+                utterance = Utterance(synthesis_text, speaker=profile.speaker, source="nte-ocr",
                                       captured_at=record.get("captured_monotonic") or time.monotonic())
                 segments_started = 0
 

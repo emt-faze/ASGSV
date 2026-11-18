@@ -1,7 +1,19 @@
 param([switch]$Admin, [switch]$AutoConnect, [switch]$Dub, [switch]$Generate, [string]$Project)
 $ErrorActionPreference = 'Stop'
 $ocrRoot = $PSScriptRoot
+$root = Split-Path -Parent $ocrRoot
+$portablePython = Join-Path $root 'runtime\python.exe'
 $ocrPython = Join-Path $ocrRoot '.venv\Scripts\pythonw.exe'
+if (Test-Path -LiteralPath $portablePython -PathType Leaf) {
+    $ocrPython = Join-Path $root 'runtime\pythonw.exe'
+    $settings = Join-Path $ocrRoot 'config.json'
+    $voiceSettings = Join-Path $root 'wuwa-dubber\data\config.json'
+    if (-not ((Test-Path -LiteralPath $settings -PathType Leaf) -and (Test-Path -LiteralPath $voiceSettings -PathType Leaf))) {
+        $configure = Join-Path $root 'scripts\configure_generator.py'
+        & $portablePython $configure --portable
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to create ASGSV settings.' }
+    }
+}
 if (-not (Test-Path -LiteralPath $ocrPython)) {
     $runtimeFile = Join-Path $ocrRoot 'runtime.json'
     if (Test-Path -LiteralPath $runtimeFile) {
