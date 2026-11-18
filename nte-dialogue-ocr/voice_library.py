@@ -369,7 +369,7 @@ class FasterWhisperTranscriber:
             if not self.config_path.is_file():
                 raise ValueError('本地转写组件尚未配置；可以手动填写参考台词')
             self.log = (self.directory/'worker.log').open('wb')
-            self.process = subprocess.Popen([sys.executable, '-X', 'utf8', '-u',
+            self.process = subprocess.Popen([sys.executable, '-s', '-X', 'utf8', '-u',
                 str(Path(__file__).with_name('voice_library_asr.py')), str(self.config_path), str(self.directory)],
                 stdin=subprocess.PIPE, stdout=self.log, stderr=self.log,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0))

@@ -6,7 +6,7 @@ ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对�
 
 ## 解压即用
 
-1. 在 Windows 10/11 x64 上，将 ZIP 完整解压到可写目录，再双击 **ASGSV.exe**。运行环境随包提供，无需另装 Python。
+1. 在 Windows 10/11 x64 上，将 ZIP 完整解压到可写目录，再双击 **ASGSV.exe**。便携包内置独立的 64 位 Python 3.12，无需在系统安装 Python，也不会使用已有的系统 Python。
 2. 打开鸣潮工作台，按提示确认游戏安装目录。可以在实时配音页启动鸣潮，再点 **一键配置并开始** 连接游戏日志。
 3. 进入下表中的任务对白。**F8** 暂停，**F9** 重播当前句，**F10** 跳过。
 
@@ -36,6 +36,16 @@ ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对�
 | [scripts/](scripts/) 和 [launcher-source/](launcher-source/) | 打包、安装和 Windows 启动器 |
 | [tools/](tools/) 和 [docs/](docs/) | 声线工具及使用说明 |
 
-从源码运行时，使用根目录的 **安装鸣潮日志配音.bat** 完成依赖安装，再运行 **打开台词生成工具.bat**。公开便携包的台词清单与录音随 ZIP 提供，位于 `game-data/wuwa/voice-pack/`。
+## 从源码安装与打包
+
+从源码运行时，双击根目录的 **安装鸣潮日志配音.bat**，等安装完成后运行 **打开台词生成工具.bat**。安装器会自动准备官方 Python 3.12.8 和 pip，依赖优先尝试清华镜像，失败后使用官方 PyPI。新构建的便携版已内置同一套独立运行环境，位于 `runtime\python\`。已发布的首版 v0.4.15 ZIP 将解释器放在 `runtime\`，使用包内的启动器即可。
+
+开发者可先运行 `scripts\ensure_embedded_python.bat`，再从仓库根目录构建。需要提供已校验的 OCR 模型和用于公开发布的任务音频目录。
+
+```powershell
+.\runtime\python\python.exe -I -X utf8 .\scripts\build_wuwa_portable.py --output .\dist --models-dir PATH_TO_OCR_MODELS --voice-pack PATH_TO_VOICE_PACK
+```
+
+任务包的台词清单和录音位于 ZIP 内的 `game-data/wuwa/voice-pack/`。
 
 本项目是玩家制作的非官方工具。随包语音为 AI 配音，游戏、角色和剧情归各自权利人所有。[第三方组件说明](THIRD_PARTY_NOTICES.md)

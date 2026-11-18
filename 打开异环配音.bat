@@ -1,4 +1,14 @@
 @echo off
+chcp 65001 >nul
+setlocal
 cd /d "%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0nte-dialogue-ocr\launch.ps1" -Generate -Game nte
-if errorlevel 1 pause
+set "ROOT=%~dp0"
+if not exist "%ROOT%runtime\python\python.exe" (
+    echo 请先运行根目录里的安装脚本。
+    pause
+    exit /b 1
+)
+"%ROOT%runtime\python\python.exe" -I -X utf8 "%ROOT%scripts\launch_desktop.py" --game nte
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" pause
+exit /b %RESULT%

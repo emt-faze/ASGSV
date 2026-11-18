@@ -1,33 +1,25 @@
-﻿param([string]$PythonPath = "", [switch]$SkipModels)
+﻿param([switch]$SkipModels, [switch]$DependenciesOnly)
 $ErrorActionPreference = 'Stop'
-$PackageRoot = Split-Path -Parent $PSScriptRoot
-$env:PYTHONUTF8 = '1'
-$env:PYTHONNOUSERSITE = '1'
+$root = Split-Path -Parent $PSScriptRoot
+$python = Join-Path $root 'runtime\python\python.exe'
+$ocr = Join-Path $root 'nte-dialogue-ocr'
 try {
-    if (-not $PythonPath) {
-        $Launcher = Get-Command py.exe -ErrorAction SilentlyContinue
-        if ($Launcher) {
-            $PythonPath = & $Launcher.Source -3.12 -c 'import sys; print(sys.executable)'
-            if ($LASTEXITCODE -ne 0) { throw 'Install Python 3.12 (64-bit) first.' }
-        } else {
-            $Launcher = Get-Command python.exe -ErrorAction SilentlyContinue
-            if (-not $Launcher) { throw 'Python 3.12 (64-bit) is required.' }
-            $PythonPath = $Launcher.Source
+    & (Join-Path $PSScriptRoot 'setup_embedded_python.ps1')
+    . (Join-Path $PSScriptRoot 'embedded_dependencies.ps1')
+    Install-EmbeddedRequirements -Python $python -Requirements (Join-Path $ocr 'requirements.txt')
+    Install-EmbeddedCppRuntime -Python $python
+    & $python -I -m pip check
+    if ($LASTEXITCODE -ne 0) { throw '依赖版本检查失败。' }
+    if (-not $DependenciesOnly) {
+        & $python -I -X utf8 (Join-Path $PSScriptRoot 'configure_generator.py') --portable
+        if ($LASTEXITCODE -ne 0) { throw '初始化设置失败。' }
+        if (-not $SkipModels) {
+            & $python -I -X utf8 (Join-Path $ocr 'scripts\download_models.py')
+            if ($LASTEXITCODE -ne 0) { throw 'OCR 模型准备失败，可以重新运行安装。' }
         }
     }
-    & $PythonPath -c 'import sys; assert sys.version_info[:2] == (3,12) and sys.maxsize > 2**32'
-    if ($LASTEXITCODE -ne 0) { throw 'The dialogue generator requires 64-bit Python 3.12.' }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install.ps1') -PythonPath $PythonPath
-    if ($LASTEXITCODE -ne 0) { throw 'Shared voice environment installation failed.' }
-    $SetupArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        (Join-Path $PackageRoot 'nte-dialogue-ocr\setup.ps1'), '-PythonPath', $PythonPath)
-    if ($SkipModels) { $SetupArguments += '-SkipModels' }
-    & powershell.exe @SetupArguments
-    if ($LASTEXITCODE -ne 0) { throw 'OCR environment installation failed.' }
-    & (Join-Path $PackageRoot 'nte-dialogue-ocr\.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'configure_generator.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Generator configuration failed.' }
-    Write-Host 'Ready. Open the dialogue generator from the root folder. Character cloning additionally requires the voice-model installer.'
+    Write-Host '台词工具环境已就绪。'
 } catch {
-    Write-Host ('Installation did not finish: ' + $_.Exception.Message) -ForegroundColor Red
+    Write-Host ('安装未完成：' + $_.Exception.Message) -ForegroundColor Red
     exit 1
 }

@@ -1,56 +1,52 @@
-﻿param(
-    [switch]$WithModel,
-    [switch]$ModelScope,
-    [string]$PythonPath = ""
-)
-
+﻿param([switch]$WithModel, [switch]$ModelScope)
 $ErrorActionPreference = 'Stop'
-$PackageRoot = Split-Path -Parent $PSScriptRoot
-$AppRoot = Join-Path $PackageRoot 'wuwa-dubber'
-$ModelRoot = Join-Path $PackageRoot 'local-voice-model'
-$env:PYTHONUTF8 = '1'
-$env:PYTHONNOUSERSITE = '1'
+$root = Split-Path -Parent $PSScriptRoot
+$modelRoot = Join-Path $root 'local-voice-model'
+$python = Join-Path $root 'runtime\python\python.exe'
+$configure = Join-Path $PSScriptRoot 'configure_install.py'
 
 try {
-    $BootstrapArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        (Join-Path $AppRoot 'scripts\bootstrap.ps1'))
-    if ($PythonPath) { $BootstrapArguments += @('-PythonPath', $PythonPath) }
-    & powershell.exe @BootstrapArguments
-    if ($LASTEXITCODE -ne 0) { throw 'Application dependency installation failed.' }
-    $AppPython = Join-Path $AppRoot '.venv\Scripts\python.exe'
-    $Configure = Join-Path $PSScriptRoot 'configure_install.py'
+    & (Join-Path $PSScriptRoot 'setup_embedded_python.ps1')
+    . (Join-Path $PSScriptRoot 'embedded_dependencies.ps1')
+    Install-EmbeddedRequirements -Python $python -Requirements (Join-Path $root 'wuwa-dubber\requirements.txt')
+    Install-EmbeddedCppRuntime -Python $python
+    & $python -I -m pip check
+    if ($LASTEXITCODE -ne 0) { throw '依赖版本检查失败。' }
     if (-not $WithModel) {
-        & $AppPython $Configure
-        if ($LASTEXITCODE -ne 0) { throw 'Could not initialize application settings.' }
-        Write-Host '基础环境已就绪。请双击“启动AI配音.bat”，默认使用系统中文朗读。'
-        exit 0
+        & $python -I -X utf8 $configure
+        exit $LASTEXITCODE
     }
 
-    & $AppPython -c "import struct,sys; raise SystemExit(not ((3,11) <= sys.version_info[:2] <= (3,12) and struct.calcsize('P') == 8))"
-    if ($LASTEXITCODE -ne 0) { throw 'The model requires 64-bit Python 3.11 or 3.12; Python 3.12 is recommended.' }
-    $ModelEnvironment = Join-Path $ModelRoot '.venv'
-    $ModelPython = Join-Path $ModelEnvironment 'Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $ModelPython -PathType Leaf)) {
-        if (Test-Path -LiteralPath $ModelEnvironment) {
-            throw 'An incomplete model environment already exists. Preserve it and install in a fresh extracted folder.'
+    # Model wheels pin different NumPy and ONNX Runtime versions than the desktop.
+    # Stage them separately and promote only after imports and the CUDA check work.
+    $modelSite = Join-Path (Split-Path -Parent $python) 'model-site'
+    $staging = Join-Path (Split-Path -Parent $python) ('model-site-' + [guid]::NewGuid())
+    $backup = $staging + '.previous'
+    try {
+        Install-EmbeddedRequirements -Python $python -Requirements (Join-Path $modelRoot 'requirements.txt') `
+            -ExtraArguments @('--target', $staging, '--ignore-installed', '--no-binary=sox',
+                              '--extra-index-url', 'https://download.pytorch.org/whl/cu128')
+        & $python -I -c "import sys; sys.path.insert(0,sys.argv[1]); import torch; assert torch.cuda.is_available(), 'CUDA GPU unavailable'; print('GPU:',torch.cuda.get_device_name(0)); print(torch.ones(1,device='cuda'))" $staging
+        if ($LASTEXITCODE -ne 0) { throw 'CUDA 验证失败，请检查 NVIDIA 驱动。' }
+        if (Test-Path -LiteralPath $modelSite) { Move-Item -LiteralPath $modelSite -Destination $backup }
+        try { Move-Item -LiteralPath $staging -Destination $modelSite } catch {
+            if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $modelSite }
+            throw
         }
-        & $AppPython -m venv $ModelEnvironment
-        if ($LASTEXITCODE -ne 0) { throw 'Could not create the model environment.' }
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
+    } finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     }
-    & $ModelPython -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -r (Join-Path $ModelRoot 'requirements.txt')
-    if ($LASTEXITCODE -ne 0) { throw 'Model dependency installation failed. Check the connection and retry this installer.' }
-    & $ModelPython -c "import torch; assert torch.cuda.is_available(), 'CUDA GPU unavailable; check the NVIDIA driver'; print('GPU:', torch.cuda.get_device_name(0)); x=torch.ones(1,device='cuda'); print('CUDA check:', x.item())"
-    if ($LASTEXITCODE -ne 0) { throw 'CUDA validation failed. The system speech mode remains available.' }
-    $DownloadArguments = @((Join-Path $ModelRoot 'download_models.py'))
-    if ($ModelScope) { $DownloadArguments += '--modelscope-fallback' }
-    & $ModelPython @DownloadArguments
-    if ($LASTEXITCODE -ne 0) { throw 'Model download incomplete. Retry to resume and verify the download.' }
-    $FFmpegExecutable = & $ModelPython -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
-    if ($LASTEXITCODE -ne 0 -or -not $FFmpegExecutable) { throw 'FFmpeg dependency verification failed.' }
-    & $AppPython $Configure --with-model --ffmpeg ([string]$FFmpegExecutable)
-    if ($LASTEXITCODE -ne 0) { throw 'Could not connect the application to the installed model.' }
-    Write-Host '角色配音环境已就绪。请启动配音程序，在“声线与音频”中导入参考录音。'
+    $arguments = @((Join-Path $modelRoot 'download_models.py'))
+    if ($ModelScope) { $arguments += '--modelscope-fallback' }
+    & $python -I -X utf8 @arguments
+    if ($LASTEXITCODE -ne 0) { throw '模型下载未完成，可重试续传。' }
+    $ffmpeg = & $python -I -c "import sys; sys.path.insert(0,sys.argv[1]); import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())" $modelSite
+    if ($LASTEXITCODE -ne 0 -or -not $ffmpeg) { throw 'FFmpeg 验证失败。' }
+    & $python -I -X utf8 $configure --with-model --ffmpeg ([string]$ffmpeg)
+    if ($LASTEXITCODE -ne 0) { throw '本地模型设置写入失败。' }
+    Write-Host '角色配音环境已就绪。'
 } catch {
-    Write-Host ("安装未完成：" + $_.Exception.Message) -ForegroundColor Red
+    Write-Host ('安装未完成：' + $_.Exception.Message) -ForegroundColor Red
     exit 1
 }

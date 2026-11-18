@@ -64,7 +64,7 @@ try {
         $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
         $StdoutLog = Join-Path $Paths.Logs ("qwen-$Stamp.stdout.log")
         $StderrLog = Join-Path $Paths.Logs ("qwen-$Stamp.stderr.log")
-        $Arguments = @('-u', ('"' + $Paths.Server + '"'), '--port', [string]$Port,
+        $Arguments = @('-I', '-X', 'utf8', '-u', ('"' + $Paths.Server + '"'), '--port', [string]$Port,
             '--app-config', ('"' + $Paths.Config + '"'))
         $Started = Start-Process -FilePath $Paths.Python -ArgumentList $Arguments -WorkingDirectory $Paths.Root `
             -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog -PassThru

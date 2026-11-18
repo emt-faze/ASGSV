@@ -27,4 +27,4 @@
 
 ## Windows 便携版运行时
 
-便携包使用 Python 3.12.10 官方 Windows 嵌入式运行时，许可证在 `runtime/LICENSE.txt`。Qt for Python、Qt、Qt 多媒体的 FFmpeg 库和其他 Python 依赖在 `runtime/Lib/site-packages` 动态加载。对应的包元数据和随轮子提供的许可证保留在各自的 `.dist-info` 目录。相关源代码见 [CPython 3.12.10](https://github.com/python/cpython/tree/v3.12.10)、[Qt for Python](https://code.qt.io/cgit/pyside/pyside-setup.git/)、[Qt](https://code.qt.io/cgit/qt/) 和 [FFmpeg](https://ffmpeg.org/download.html)。可按包内记录的版本替换动态链接库。微软 Visual C++ 运行库随来自上游的 Python 和 PySide6 发布文件提供。
+新构建的便携包使用 Python 3.12.8 官方 Windows 嵌入式运行时，许可证在 `runtime/python/LICENSE.txt`。Qt for Python、Qt、Qt 多媒体的 FFmpeg 库和其他 Python 依赖在 `runtime/python/Lib/site-packages` 动态加载。对应的包元数据和随轮子提供的许可证保留在各自的 `.dist-info` 目录。相关源代码见 [CPython 3.12.8](https://github.com/python/cpython/tree/v3.12.8)、[Qt for Python](https://code.qt.io/cgit/pyside/pyside-setup.git/)、[Qt](https://code.qt.io/cgit/qt/) 和 [FFmpeg](https://ffmpeg.org/download.html)。可按包内记录的版本替换动态链接库。微软 Visual C++ 运行库随来自上游的 Python 和 PySide6 发布文件提供。

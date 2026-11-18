@@ -82,7 +82,7 @@ def relaunch_admin(arguments):
     pythonw = python.with_name("pythonw.exe")
     if pythonw.exists():
         python = pythonw
-    params = subprocess.list2cmdline([str(ROOT / "app.py"), *arguments])
+    params = subprocess.list2cmdline(["-s", str(ROOT / "app.py"), *arguments])
     shell = ctypes.windll.shell32.ShellExecuteW
     shell.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p,
                       ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_int]

@@ -42,7 +42,7 @@ def source_files(root=ROOT):
                                           'tools/speech-cleanup/studio_clean.py',
                                           'tools/speech-cleanup/vendor/nara_wpe-0.0.11-py3-none-any.whl',
                                           'tools/speech-cleanup/vendor/nara_wpe-0.0.11-py3-none-any.provenance.json'))
-    forbidden = {'.git','.venv','data','records','generation-projects','runtime-logs','__pycache__','reference','backups',
+    forbidden = {'.git','.venv','runtime','data','records','generation-projects','runtime-logs','__pycache__','reference','backups',
                  'voice-library-drafts','asr-runtime'}
     for p in selected:
         relative = p.relative_to(root)

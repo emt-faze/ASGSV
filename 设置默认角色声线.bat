@@ -1,10 +1,14 @@
 @echo off
 chcp 65001 >nul
 setlocal
-if not exist "%~dp0nte-dialogue-ocr\.venv\Scripts\python.exe" (
-  echo 请先运行“安装台词生成工具.bat”。
-  pause
-  exit /b 1
+cd /d "%~dp0"
+set "ROOT=%~dp0"
+if not exist "%ROOT%runtime\python\python.exe" (
+    echo 请先运行根目录里的安装脚本。
+    pause
+    exit /b 1
 )
-"%~dp0nte-dialogue-ocr\.venv\Scripts\python.exe" -X utf8 "%~dp0scripts\choose_default_voice.py"
-exit /b %ERRORLEVEL%
+"%ROOT%runtime\python\python.exe" -I -X utf8 "%ROOT%scripts\choose_default_voice.py"
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" pause
+exit /b %RESULT%

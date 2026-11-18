@@ -977,7 +977,7 @@ class OrganizerWindow(W.QWidget):
             self.project_opener(Path(path))
             return
         try:
-            subprocess.Popen([sys.executable,str(ASGSV/'dialogue_generator_ui.py'),'--project',path,'--game','nte'],
+            subprocess.Popen([sys.executable,'-s',str(ASGSV/'dialogue_generator_ui.py'),'--project',path,'--game','nte'],
                 cwd=ASGSV,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         except OSError as exc:
@@ -1075,7 +1075,7 @@ class OrganizerWindow(W.QWidget):
         self.updater.errorOccurred.connect(self.update_failed)
         self.set_busy(True)
         self.status.setText('正在自动识别异环安装目录…')
-        arguments = ['-X','utf8',str(ASGSV/'nte_resources.py'),'--auto',
+        arguments = ['-s','-X','utf8',str(ASGSV/'nte_resources.py'),'--auto',
                      '--config',str(ASGSV/'config.json'),'--output',self.options['catalog_path']]
         if game_root is not None:
             arguments.extend(['--game-root',str(game_root)])

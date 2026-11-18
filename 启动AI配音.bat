@@ -1,10 +1,14 @@
 @echo off
 chcp 65001 >nul
 setlocal
-if not exist "%~dp0wuwa-dubber\.venv\Scripts\python.exe" (
-    echo 请先双击“安装基础环境.bat”或“安装角色配音模型.bat”。
+cd /d "%~dp0"
+set "ROOT=%~dp0"
+if not exist "%ROOT%runtime\python\python.exe" (
+    echo 请先运行根目录里的安装脚本。
     pause
     exit /b 1
 )
-call "%~dp0wuwa-dubber\start-ai-dubbing.bat"
-exit /b %ERRORLEVEL%
+"%ROOT%runtime\python\python.exe" -I -X utf8 "%ROOT%wuwa-dubber\scripts\launch_app.py"
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" pause
+exit /b %RESULT%

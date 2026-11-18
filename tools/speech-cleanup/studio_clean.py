@@ -12,12 +12,17 @@ VENDOR = ROOT/'vendor/nara_wpe-0.0.11-py3-none-any.whl'
 manifest = json.loads(VENDOR.with_suffix('.provenance.json').read_text())
 assert hashlib.sha256(VENDOR.read_bytes()).hexdigest() == manifest['sha256']
 sys.path.insert(0, str(VENDOR))
+model_site = ROOT.parents[1] / 'runtime/python/model-site'
+if model_site.is_dir():
+    sys.path.insert(0, str(model_site))
+
+import imageio_ffmpeg
 import numpy as np
 from scipy import signal
 import soundfile as sf
 from nara_wpe.wpe import wpe_v7
 
-FFMPEG = ROOT.parents[1]/'local-voice-model/.venv/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe'
+FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def digest(path):

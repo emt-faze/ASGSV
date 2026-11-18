@@ -84,7 +84,7 @@ class NteHomeTests(unittest.TestCase):
             self.panel.open_live(dubbing=False)
             self.panel.open_live(dubbing=False)
         start.assert_called_once()
-        self.assertEqual(start.call_args.args[0][1:], [str(self.root / 'app.py')])
+        self.assertEqual(start.call_args.args[0][1:], ['-s', str(self.root / 'app.py')])
         self.assertEqual(start.call_args.kwargs['cwd'], self.root)
 
     def test_library_embeds_organizer_and_routes_projects_inside_workbench(self):

@@ -596,7 +596,7 @@ def gui(autoconnect=False, dubbing=False):
                 from dialogue_dubbing import voice_paths
                 code, data = voice_paths(self.config["dubbing"])
                 env = dict(os.environ, PYTHONPATH=str(code / "src"), WUWA_DUBBER_DATA=str(data), PYTHONUTF8="1")
-                subprocess.Popen([str(Path(sys.executable).with_name("pythonw.exe")), "-m", "wuwa_dubber"],
+                subprocess.Popen([str(Path(sys.executable).with_name("pythonw.exe")), "-s", "-m", "wuwa_dubber"],
                                  cwd=code, env=env, creationflags=subprocess.CREATE_NO_WINDOW)
                 self.speech_status.setText("已打开声线设置，保存后请停止并重新开始本流程以应用修改。")
             except Exception as exc:
@@ -858,7 +858,7 @@ def gui(autoconnect=False, dubbing=False):
             os.startfile(path)
 
         def open_review(self):
-            subprocess.Popen([str(Path(sys.executable).with_name("pythonw.exe")), str(ROOT/"review_samples.py")], cwd=ROOT)
+            subprocess.Popen([str(Path(sys.executable).with_name("pythonw.exe")), "-s", str(ROOT/"review_samples.py")], cwd=ROOT)
 
         def open_generator(self):
             if self.is_busy():

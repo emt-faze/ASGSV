@@ -2,7 +2,8 @@
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop-server.ps1"
-echo.
+for %%I in ("%~dp0..") do set "ROOT=%%~fI\"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%local-voice-model\scripts\stop-server.ps1"
+set "RESULT=%ERRORLEVEL%"
 pause
-endlocal
+exit /b %RESULT%

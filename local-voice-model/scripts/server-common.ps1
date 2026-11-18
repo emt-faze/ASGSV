@@ -22,7 +22,7 @@ function Get-VoicePaths {
     }
     [pscustomobject]@{
         Root = $ResolvedRoot
-        Python = Join-Path $ResolvedRoot '.venv\Scripts\python.exe'
+        Python = Join-Path (Split-Path -Parent $ResolvedRoot) 'runtime\python\python.exe'
         Server = Join-Path $ResolvedRoot 'qwen_server.py'
         Model = Join-Path $ResolvedRoot 'models\Qwen3-TTS-12Hz-0.6B-Base'
         Logs = Join-Path $ResolvedRoot 'logs'
@@ -44,7 +44,7 @@ function Test-OwnedVoiceProcess {
     # A script name embedded in -c text, an option value or a different directory is rejected.
     $InterpreterPattern = [regex]::Escape($Paths.Python)
     $ServerPattern = [regex]::Escape($Paths.Server)
-    $CommandPattern = '^(?:"' + $InterpreterPattern + '"|' + $InterpreterPattern + ')\s+(?:-u\s+)?(?:"' + $ServerPattern + '"|' + $ServerPattern + ')(?=\s|$)'
+    $CommandPattern = '^(?:"' + $InterpreterPattern + '"|' + $InterpreterPattern + ')\s+(?:-I\s+-X\s+utf8\s+)?(?:-u\s+)?(?:"' + $ServerPattern + '"|' + $ServerPattern + ')(?=\s|$)'
     $PortPattern = '(?:^|\s)--port(?:\s+|=)' + $Paths.Port + '(?=\s|$)'
     return [regex]::IsMatch($ProcessInfo.CommandLine, $CommandPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase) -and
         [regex]::IsMatch($ProcessInfo.CommandLine, $PortPattern)

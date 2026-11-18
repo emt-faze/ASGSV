@@ -33,15 +33,18 @@ def configure(root=ROOT):
     return dict(settings_updated=changed)
 
 
+def configure_portable(root=ROOT):
+    sys.path.insert(0, str(root / 'wuwa-dubber/src'))
+    from wuwa_dubber.config import AppPaths, load_config
+
+    paths = AppPaths(root / 'wuwa-dubber/data')
+    if not paths.config.is_file():
+        load_config(paths)
+    return configure(root)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--portable', action='store_true')
     args = parser.parse_args()
-    if args.portable:
-        sys.path.insert(0, str(ROOT / 'wuwa-dubber/src'))
-        from wuwa_dubber.config import AppPaths, load_config
-
-        paths = AppPaths(ROOT / 'wuwa-dubber/data')
-        if not paths.config.is_file():
-            load_config(paths)
-    print(json.dumps(configure()))
+    print(json.dumps(configure_portable() if args.portable else configure()))

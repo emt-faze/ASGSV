@@ -110,13 +110,18 @@ def process_export(project,row,staging,stop,root):
         return None
     dg=Path(__file__).resolve().parent.parent
     script=dg/'tools/speech-cleanup/studio_clean.py'
-    if file_digest(script)!=options['processor_sha256']:
+    processor_hash = file_digest(script)
+    saved_hash = options['processor_sha256']
+    # This revision only changes dependency and FFmpeg paths.
+    previous_processors = {'0d7b041667e4d1ce8ea2c21ccf7ecd6b6b73612970e7cafca911fc83e7ac1bc9'}
+    compatible = processor_hash == '708a492f1639886a4fcfb938efee64b311ba5d9758caabe7db1e415a8012f921' and saved_hash in previous_processors
+    if processor_hash != saved_hash and not compatible:
         raise ValueError('Studio processor changed; keep existing audio and review the recipe')
     if stop.is_set():
         raise InterruptedError('Studio processing cancelled')
     output=Path(staging).with_name('.studio-'+uuid4().hex+'.wav')
     metadata=output.with_suffix('.processing.json')
-    command=[str(dg/'local-voice-model/.venv/Scripts/python.exe'),str(script),str(staging),str(output),
+    command=[str(dg/'runtime/python/python.exe'),'-I','-X','utf8',str(script),str(staging),str(output),
              '--strength',str(options['strength'])]
     if options['soft']:
         command.append('--soft')

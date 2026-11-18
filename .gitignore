@@ -5,6 +5,7 @@
 **/secrets.*
 **/credentials.*
 # Installed runtimes, models and downloaded assets
+/runtime/
 **/.venv/
 **/.venv-backup-*/
 **/models/

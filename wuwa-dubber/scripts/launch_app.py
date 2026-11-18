@@ -41,7 +41,10 @@ def main() -> int:
             print("模型未就绪，请检查模型日志。也可以用原启动方式打开设置，切换系统中文朗读。")
             return code
     env = dict(os.environ, PYTHONPATH=str(ROOT / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""), PYTHONUTF8="1")
-    return subprocess.call([sys.executable, "-m", "wuwa_dubber"], cwd=ROOT, env=env)
+    interpreter = [sys.executable]
+    if sys.flags.isolated:
+        interpreter += ["-I", "-X", "utf8"]
+    return subprocess.call([*interpreter, "-m", "wuwa_dubber"], cwd=ROOT, env=env)
 
 
 if __name__ == "__main__":

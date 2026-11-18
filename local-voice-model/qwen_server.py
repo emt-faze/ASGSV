@@ -520,4 +520,9 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+
+    model_site = ROOT.parent / 'runtime/python/model-site'
+    if model_site.is_dir():
+        sys.path.insert(0, str(model_site))
     main()

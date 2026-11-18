@@ -206,7 +206,7 @@ class NteLiveDialog(OcrCollectionDialog):
         self.updater.setStandardOutputFile(str(log))
         self.updater.finished.connect(self.catalog_updated)
         self.updater.errorOccurred.connect(self.catalog_update_error)
-        self.updater.start(sys.executable, ['-X', 'utf8', str(self.root / 'nte_resources.py'),
+        self.updater.start(sys.executable, ['-s', '-X', 'utf8', str(self.root / 'nte_resources.py'),
             '--auto', '--config', str(self.root / 'config.json')])
         self.set_busy(True)
         self.status.setText('正在读取已安装的异环资源并更新原文库…')

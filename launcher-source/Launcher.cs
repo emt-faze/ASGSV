@@ -17,28 +17,29 @@ internal static class Launcher
         Application.EnableVisualStyles();
         try
         {
-            string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-            string root = Path.Combine(baseDirectory, "DG", "nte-dialogue-ocr");
-            if (!Directory.Exists(root))
-                root = Path.Combine(baseDirectory, "nte-dialogue-ocr");
+            string root = AppDomain.CurrentDomain.BaseDirectory;
+            string script = Path.Combine(root, @"scripts\launch_desktop.py");
+            if (!File.Exists(script))
+            {
+                root = Path.Combine(root, "DG");
+                script = Path.Combine(root, @"scripts\launch_desktop.py");
+            }
+            if (!File.Exists(script))
+                throw new FileNotFoundException("ASGSV files were not found. Extract the full ZIP before launching.");
 
-            string script = Path.Combine(root, "launch.ps1");
-            string entry = Path.Combine(root, "dialogue_generator_ui.py");
-            if (!File.Exists(script) || !File.Exists(entry))
-                throw new FileNotFoundException(
-                    "\u672a\u627e\u5230 ASGSV \u7a0b\u5e8f\u3002\n\u8bf7\u5c06 ASGSV.exe \u653e\u5728 DG \u6587\u4ef6\u5939\u65c1\uff0c\u6216 DG \u6587\u4ef6\u5939\u5185\u3002\n\n" + baseDirectory);
+            string python = Path.Combine(root, @"runtime\python\python.exe");
+            if (!File.Exists(python))
+                throw new FileNotFoundException("Embedded Python was not found. Run the ASGSV installer first.");
 
-            string powershell = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.System),
-                "WindowsPowerShell", "v1.0", "powershell.exe");
             ProcessStartInfo start = new ProcessStartInfo
             {
-                FileName = powershell,
-                Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + "\" -Generate",
-                WorkingDirectory = root,
+                FileName = python,
+                Arguments = "-I -X utf8 \"" + script + "\"",
+                WorkingDirectory = Path.Combine(root, "nte-dialogue-ocr"),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
+                StandardErrorEncoding = Encoding.UTF8,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true
             };

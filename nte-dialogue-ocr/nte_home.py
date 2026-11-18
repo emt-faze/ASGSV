@@ -208,7 +208,7 @@ class NteHomePanel(W.QWidget):
             self.message('游戏连接与字幕校准窗口已打开')
             return
         try:
-            self.settings_process = subprocess.Popen([sys.executable,str(self.root/'app.py')],cwd=self.root,
+            self.settings_process = subprocess.Popen([sys.executable,'-s',str(self.root/'app.py')],cwd=self.root,
                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             self.message('已打开游戏连接与字幕校准窗口')

@@ -1,10 +1,8 @@
-"""Build a relocatable Windows x64 package using an embeddable Python ZIP and installed wheels."""
+"""Build a relocatable Windows x64 package with a clean Python 3.12.8 runtime and pinned application wheels."""
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
-import io
 import json
 from pathlib import Path
 import shutil
@@ -13,36 +11,6 @@ import tempfile
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from build_generator_release import ROOT, source_files, verified_models
-
-QT_PLUGINS = {'platforms', 'imageformats', 'iconengines', 'styles', 'multimedia',
-              'networkinformation', 'tls'}
-QT_ADDONS = {'Qt6Multimedia.dll', 'QtMultimedia.pyd'}
-EXCLUDED_WHEELS = {'pip', 'opencv_python_headless'}
-
-
-def wheel_files(site):
-    for record in sorted(site.glob('*.dist-info/RECORD')):
-        wheel = record.parent.name.removesuffix('.dist-info').rsplit('-', 1)[0]
-        if wheel in EXCLUDED_WHEELS:
-            continue
-        for name, *_ in csv.reader(io.StringIO(record.read_text(encoding='utf-8'))):
-            path = site / name
-            if not path.is_file() or not path.resolve().is_relative_to(site) or path.is_symlink():
-                continue
-            relative = path.relative_to(site)
-            if '__pycache__' in relative.parts or path.suffix in {'.pyc', '.pyi', '.pdb', '.chm'}:
-                continue
-            if relative.parts[0] == 'PySide6':
-                if relative.parts[1] == 'plugins' and relative.parts[2] not in QT_PLUGINS:
-                    continue
-                if relative.parts[1] in {'qml', 'include', 'metatypes', 'typesystems', 'translations',
-                                          'glue', 'scripts', 'doc', 'examples'} or path.suffix == '.exe':
-                    continue
-                if (wheel == 'pyside6_addons' and relative.parts[1] != 'plugins'
-                        and path.name not in QT_ADDONS and not path.name.startswith(('av', 'sw'))):
-                    continue
-            yield path, relative
-
 
 def copy(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -80,24 +48,20 @@ def build(args):
                 copy(source, root / source.relative_to(ROOT))
         for relative, source in verified_models(ROOT, args.models_dir):
             copy(source, root / relative)
-        runtime = root / 'runtime'
-        with ZipFile(args.python_zip) as bundle:
-            bundle.extractall(runtime)
-        (runtime / 'python312._pth').write_text(
-            'python312.zip\n.\nLib/site-packages\n../nte-dialogue-ocr\n../wuwa-dubber/src\nimport site\n',
-            encoding='ascii')
-        site = args.site_packages.resolve()
-        for source, relative in wheel_files(site):
-            copy(source, runtime / 'Lib/site-packages' / relative)
-        for name in ('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll'):
-            copy(site / 'PySide6' / name, runtime / name)
+        subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                        str(root / 'scripts/install_generator.ps1'), '-DependenciesOnly'], check=True)
+        python = root / 'runtime/python/python.exe'
+        python_version = subprocess.check_output(
+            [str(python), '-I', '-c', "import platform; print(platform.python_version())"], text=True
+        ).strip()
+        subprocess.run([str(python), '-I', '-m', 'pip', '--version'], check=True)
         count = add_voice_pack(args.voice_pack, root)
         subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                         str(root / 'launcher-source/build.ps1')], check=True)
-        files = sorted(p for p in root.rglob('*') if p.is_file())
+        files = sorted(p for p in root.rglob('*') if p.is_file() and p != root / 'runtime/.setup.lock')
         files_manifest = {p.relative_to(root).as_posix(): checksum(p) for p in files}
         manifest = root / 'FILE_MANIFEST.json'
-        manifest.write_text(json.dumps({'version': version, 'quest_lines': count, 'files': files_manifest},
+        manifest.write_text(json.dumps({'version': version, 'python': python_version, 'quest_lines': count, 'files': files_manifest},
                                        ensure_ascii=False, indent=2), encoding='utf-8')
         archive = args.output / f'ASGSV-v{version}-Windows-x64-Portable.zip'
         temporary = archive.with_suffix('.partial')
@@ -115,6 +79,6 @@ def build(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('output', 'python-zip', 'site-packages', 'models-dir', 'voice-pack'):
+    for name in ('output', 'models-dir', 'voice-pack'):
         parser.add_argument('--' + name, required=True, type=Path)
     print(build(parser.parse_args()))

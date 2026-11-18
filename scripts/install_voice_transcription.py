@@ -49,11 +49,19 @@ def main():
         print('已有自动转写配置，已保留。可以打开工具，在批量声线窗口重试转写。')
         return
     if sys.version_info[:2] != (3,12) or sys.maxsize <= 2**32:
-        raise ValueError('请使用安装台词生成工具时创建的 Python 3.12（64 位）环境')
+        raise ValueError('请使用项目内置的 Python 3.12（64 位）运行环境')
     module_path = ROOT/'local-voice-model/asr-runtime'
     print('正在安装独立的转写组件；不会修改台词工具的依赖环境…',flush=True)
-    subprocess.run([sys.executable,'-m','pip','install','--only-binary=:all:','--upgrade','--target',str(module_path),
-                    'faster-whisper==1.2.1','av==16.1.0'],check=True)
+    command = [sys.executable, '-I', '-X', 'utf8', '-m', 'pip', '--isolated', 'install',
+               '--only-binary=:all:', '--no-warn-script-location', '--upgrade', '--target', str(module_path),
+               '-r', str(ROOT / 'local-voice-model/requirements-asr.txt')]
+    for index in ('https://pypi.tuna.tsinghua.edu.cn/simple', 'https://pypi.org/simple'):
+        result = subprocess.run([*command, '--index-url', index])
+        if result.returncode == 0:
+            break
+        if index == 'https://pypi.org/simple':
+            result.check_returncode()
+        print('镜像安装失败，改用 PyPI 官方源。', flush=True)
     sys.path.insert(0,str(module_path))
     model_path = args.model_path.resolve() if args.model_path else ROOT/'local-voice-model/models/faster-whisper-small'
     if args.model_path is None:

@@ -14,15 +14,15 @@ FIXED_FILES = (
     "docs/latency-benchmarks.json", "assets/app_icon.png", "assets/app_icon.ico",
     "nte-dialogue-ocr/asgsv_identity.py", "nte-dialogue-ocr/combo_popup.py",
     "安装基础环境.bat", "安装角色配音模型.bat", "启动AI配音.bat", "打开设置.bat", "停止本地模型.bat",
-    "wuwa-dubber/README.md", "wuwa-dubber/使用说明.txt", "wuwa-dubber/pyproject.toml", "wuwa-dubber/constraints.txt",
+    "wuwa-dubber/README.md", "wuwa-dubber/使用说明.txt", "wuwa-dubber/requirements.txt", "wuwa-dubber/pyproject.toml", "wuwa-dubber/constraints.txt",
     "wuwa-dubber/start-ai-dubbing.bat", "wuwa-dubber/start-wuwa-dubber.bat",
     "local-voice-model/README.md", "local-voice-model/qwen_server.py",
-    "local-voice-model/download_models.py", "local-voice-model/requirements.txt",
+    "local-voice-model/download_models.py", "local-voice-model/requirements.txt", "local-voice-model/requirements-asr.txt",
     "local-voice-model/requirements-lock.txt", "local-voice-model/test_server_protocol.py",
     "local-voice-model/启动本地模型.bat", "local-voice-model/停止本地模型.bat",
 )
 SOURCE_DIRS = {
-    "docs": {".md"}, "scripts": {".py", ".ps1"},
+    "docs": {".md"}, "scripts": {".py", ".ps1", ".bat"},
     "wuwa-dubber/src/wuwa_dubber": {".py"}, "wuwa-dubber/scripts": {".py", ".ps1"},
     "wuwa-dubber/tests": {".py"}, "wuwa-dubber/assets": {".ico"},
     "local-voice-model/scripts": {".ps1"},
