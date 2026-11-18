@@ -36,7 +36,8 @@ def save_default(data_root, speaker):
 def main():
     from PySide6 import QtCore, QtWidgets
     from dialogue_dubbing import voice_paths
-    application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    from asgsv_identity import create_application
+    application = create_application(sys.argv)
     locks = []
     try:
         options = json.loads((ROOT/'nte-dialogue-ocr/config.json').read_text(encoding='utf-8-sig')).get('dubbing', {})

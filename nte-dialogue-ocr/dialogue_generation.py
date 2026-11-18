@@ -617,12 +617,15 @@ class BatchGenerator:
                     self.project.save()
                     self.emit(f"正在生成 {number}/{len(rows)}：{row.speaker or '未指定角色'}", row_id=row.id,
                               current=number-1, total=len(rows))
+                    synthesis_text = row.text
                     profile, fallback = select_voice(self.runtime, row)
                     if self.project.game_id == 'wuwa':
+                        from wuwa_pronunciation import tts_text
+                        synthesis_text = tts_text(row.text, root)
                         from wuwa_studio_voice import configure_client
                         configure_client(self.runtime, root, row)
                         cache = SpeechCache(self.runtime.config, self.runtime.cache_dir, self.runtime.client)
-                    utterance = Utterance(row.text, speaker=profile.speaker, source="batch_generation")
+                    utterance = Utterance(synthesis_text, speaker=profile.speaker, source="batch_generation")
                     full_key = cache.path_for(utterance, profile).stem
                     voice_signature = None
                     if self.project.game_id == 'wuwa':
@@ -645,12 +648,12 @@ class BatchGenerator:
                     cache_hit = found is not None
                     if found:
                         shutil.copyfile(found.path, temp)
-                    elif len(row.text) <= 300:
+                    elif len(synthesis_text) <= 300:
                         speech = cache.get_or_create(utterance, profile, cancel_event=self.stop_event, force=force)
                         cache_hit = speech.cache_hit
                         shutil.copyfile(speech.path, temp)
                     else:
-                        parts = split_for_speech(row.text, max_chars=300)
+                        parts = split_for_speech(synthesis_text, max_chars=300)
                         paths, cache_hit = [], True
                         for index, part in enumerate(parts, 1):
                             self.emit(f"第 {number}/{len(rows)} 条 · 分段 {index}/{len(parts)}", row_id=row.id)

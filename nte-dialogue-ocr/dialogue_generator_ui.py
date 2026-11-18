@@ -10,11 +10,13 @@ import threading
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from asgsv_identity import application_icon, create_application
 from dialogue_dubbing import ROOT, VoiceRuntime, voice_paths
 from dialogue_generation import BatchGenerator, GenerationProject, latest_record, select_voice
 from system_voices import PRESETS
 from generator_voice_review import describe_voice, uncertain_rows, apply_voice_choices, review_dialog
-from generator_ui_support import configure_application, configure_dialog, fit_window_to_screen, set_help
+from generator_ui_support import (STUDIO_SERIF, configure_application, configure_dialog,
+                                  fit_window_to_screen, set_help, studio_font)
 
 
 STATE_NAMES = {"pending": "待生成", "generating": "生成中", "done": "已完成",
@@ -121,6 +123,7 @@ class AudioPreviewWorker(QtCore.QThread):
 class GeneratorWindow(QtWidgets.QDialog):
     def __init__(self, options, parent=None, *, root=ROOT, project_path=None):
         super().__init__(parent)
+        self.setWindowIcon(application_icon())
         self.root = Path(root)
         self.options = dict(options)
         self.cloud_only = False
@@ -162,6 +165,9 @@ class GeneratorWindow(QtWidgets.QDialog):
         title_row.setSpacing(10)
         title = QtWidgets.QLabel('鸣潮 · 配音准备' if self.game_id == 'wuwa' else "异环 · 台词生成工具")
         title.setStyleSheet("font-size:20px; font-weight:700; color:#f1f5f9;")
+        if self.game_id == 'wuwa':
+            title.setFont(studio_font(STUDIO_SERIF, 27, QtGui.QFont.Weight.Bold, tracking=1.2))
+            title.setStyleSheet("color:#183832;")
         title_row.addWidget(title)
         badge = QtWidgets.QLabel('鸣潮 Wuthering Waves' if self.game_id == 'wuwa' else '异环 NTE')
         badge.setStyleSheet(
@@ -1207,7 +1213,7 @@ def main():
     parser.add_argument("--organize", action='store_true', help="打开异环台词整理与配音准备页")
     parser.add_argument("--smoke-ms", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    application = create_application(sys.argv)
     configure_application(application)
     font = application.font()
     font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "SimSun"])
@@ -1232,7 +1238,7 @@ def main():
                 return 0
             window = GameHome(game_id=selected_game)
             if args.organize:
-                window.nte.workspace_tabs.setCurrentIndex(1)
+                window.nte.workspace_tabs.setCurrentWidget(window.nte.task_library)
     except Exception as exc:
         QtWidgets.QMessageBox.warning(None, "台词生成工具未打开", str(exc))
         return 1

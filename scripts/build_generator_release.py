@@ -29,6 +29,8 @@ def source_files(root=ROOT):
     selected.update(p for p in (root/'tools/voice-library').rglob('*')
                     if p.is_file() and p.suffix in {'.py','.md'} and '__pycache__' not in p.parts)
     selected.add(ocr/'validation/README.md')
+    selected.update(ocr/'ui'/name for name in ('icons.py', 'workbench.py', 'stage_background.py', 'stage_voices.py'))
+    selected.update(ocr/'assets'/name for name in ('dialogue-coast.jpg', 'dialogue-preview.flac'))
     selected.update(ocr/'ww_log_decoder'/name for name in ('decoder.py','LICENSE','source.json'))
     selected.update((ocr/'nte_organizer').glob('*.py'))
     selected.update(ocr/'assets/nte-resource-reader'/name for name in

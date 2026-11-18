@@ -67,8 +67,9 @@ def existing_audio(catalog,config,only=None):
                     if original_problem(catalog,source['speaker_id'],line.cloud_voice):
                         continue
                     direction=breeze.line_direction(catalog,row.source_id,line.cloud_voice)
+                    spoken=row.audio.get("tts_text", breeze.strip_asides(row.text))
                     if (line.cloud_voice!=breeze.pairing(catalog,source['speaker_id'],row.voice)
-                            or row.audio['cache_key']!=breeze.recipe(row.text,line.cloud_voice,direction)):
+                            or row.audio['cache_key']!=breeze.recipe(row.text,line.cloud_voice,direction,spoken=spoken)):
                         continue
                     audio[key]=line
                     used.add(str(project.directory))
@@ -99,14 +100,15 @@ def export_cloud(catalog, project, entry, cloud_voice, still_current, stop, lock
             raise ValueError(problem)
         return still_current()
     direction=breeze.line_direction(catalog,entry.source_id,cloud_voice)
-    cached,hit=breeze.cached_wav(catalog,entry.text,cloud_voice,reviewed_and_current,direction)
+    spoken=breeze.spoken_text(entry.text,catalog.root)
+    cached,hit=breeze.cached_wav(catalog,entry.text,cloud_voice,reviewed_and_current,direction,spoken=spoken)
     folder=project.directory/'audio'
     folder.mkdir(exist_ok=True)
     stage=folder/('.'+uuid4().hex+'.wav')
     try:
         shutil.copyfile(cached,stage)
         label = catalog.db.execute('SELECT name FROM breeze_presets WHERE id=?',(cloud_voice,)).fetchone()
-        info=dict(cache_key=breeze.recipe(entry.text,cloud_voice,direction),input_key=entry.input_key(project.mode),
+        info=dict(tts_text=spoken,cache_key=breeze.recipe(entry.text,cloud_voice,direction,spoken=spoken),input_key=entry.input_key(project.mode),
             voice='BreezeBlue · '+(label[0] if label else entry.speaker),provider='breezeblue',cloud_voice=cloud_voice,
             cache_hit=hit,generated_at=timestamp())
         _publish_export(project,entry,stage,info,stop,lock)
@@ -134,7 +136,8 @@ def export_original_reference(catalog,config,project,entry,stop,lock):
     profile,_=select_voice(runtime,entry)
     runtime.prepare(stop,lambda message:None,playback=False)
     cache=SpeechCache(runtime.config,runtime.cache_dir,runtime.client)
-    utterance=Utterance(entry.text,speaker=profile.speaker,source='batch_generation')
+    from wuwa_pronunciation import tts_text
+    utterance=Utterance(tts_text(entry.text,catalog.root),speaker=profile.speaker,source='batch_generation')
     speech=cache.get_or_create(utterance,profile,cancel_event=stop)
     breeze.check_audio(speech.path)
     folder=project.directory/'audio'
@@ -163,6 +166,7 @@ class GenerationService:
         self.lock=threading.Lock()
         self.runner=None
         self.current=None
+        self.activity = ('ready', '合成队列待命')
         self.thread=threading.Thread(target=self.run,name='wuwa-log-generation',daemon=True)
         self.thread.start()
 
@@ -253,8 +257,10 @@ class GenerationService:
             if not still_current():
                 return None
             if voice.startswith('character:'):
+                self.activity = ('busy', '本地原声参考合成中')
                 self.notify('原声参考合成 · '+binding['label'])
                 return export_original_reference(catalog,config,project,entry,self.stopping,self.lock)
+            self.activity = ('busy', 'BreezeBlue 合成中')
             self.notify('BreezeBlue · '+binding['label']+' · '+entry.text[:18])
             return export_cloud(catalog,project,entry,voice.partition(':')[2],still_current,self.stopping,self.lock)
         runner=BatchGenerator(project,dict(config['dubbing'],catalog_root=str(self.root)))
@@ -263,6 +269,7 @@ class GenerationService:
                 return None
             self.runner=runner
         try:
+            self.activity = ('busy', '本地语音合成中')
             self.notify(('后台重录' if background else '正在生成')+' · '+row['speaker']+' · '+row['raw_text'][:18])
             entry=project.rows[0]
             try:
@@ -290,6 +297,7 @@ class GenerationService:
                             breeze.pairing(catalog,row['speaker_id'],voice)==cloud_voice)
                 if not still_current():
                     raise
+                self.activity = ('busy', 'BreezeBlue 补录中')
                 self.notify('本地合成未通过，尝试已选的 BreezeBlue 声线 · '+row['speaker'])
                 try:
                     return export_cloud(catalog, project, entry, cloud_voice, still_current,self.stopping,self.lock)
@@ -314,6 +322,7 @@ class GenerationService:
                     try:
                         config=json.loads((self.root/'config.json').read_text(encoding='utf-8'))
                         clip=self.generate(catalog,config,identity,voice,priority>0)
+                        self.activity = ('ready', '合成队列待命')
                         if self.stopping.is_set():
                             break
                         with catalog.db:
@@ -327,8 +336,10 @@ class GenerationService:
                         with catalog.db:
                             catalog.db.execute('UPDATE log_generation SET error=? WHERE line_id=? AND voice=?',(str(exc),identity,voice))
                         self.finished.put((identity,voice,None,str(exc)))
+                        self.activity = ('warning', '上次合成暂缓：' + str(exc))
                         self.notify('生成暂缓 · '+str(exc))
                 except Exception as exc:
+                    self.activity = ('warning', '上次处理队列暂缓：' + str(exc))
                     self.notify('生成队列暂缓 · '+str(exc))
                     self.stopping.wait(1)
         finally:

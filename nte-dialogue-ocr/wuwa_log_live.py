@@ -14,7 +14,7 @@ from wuwa_catalog import Catalog, resolve_text
 from wuwa_log_generation import existing_audio, GenerationService
 from wuwa_log_audio import LogPlayback
 from wuwa_log_stream import GameLog
-from wuwa_voice_pack import load_pack
+from wuwa_voice_pack import load_pack, pack_matches
 from wuwa_breeze import pairing
 
 
@@ -25,11 +25,14 @@ class LogWorker(QtCore.QThread):
         super().__init__(parent)
         self.root = Path(root)
         self.stop_event = threading.Event()
+        self.voice_changes = queue.SimpleQueue()
         self.controller = None
         self.game_pid = None
+        self.log_readable = False
         self.run_id = str(time.time_ns())
         self.report = self.root/'live-sessions'/self.run_id/'log-playback.jsonl'
         self.write_lock = threading.Lock()
+        self.packed_binding = None
         self.current_row = None
         self.current_voice = None
         self.audio = {}
@@ -46,6 +49,22 @@ class LogWorker(QtCore.QThread):
             with self.report.open('a', encoding='utf-8') as stream:
                 stream.write(json.dumps(dict(event, timestamp=time.time(), monotonic=time.monotonic()), ensure_ascii=False)+'\n')
 
+    def request_voice_refresh(self, identity, voice):
+        self.voice_changes.put((identity,voice))
+
+    def needs_voice_refresh(self, decision):
+        # A choice can commit while apply() is loading the previous audio. Reconcile
+        # on the reader thread, against the current subtitle and current DB binding.
+        refresh = False
+        while True:
+            try:
+                identity, voice = self.voice_changes.get_nowait()
+            except queue.Empty:
+                return refresh
+            if (decision and len(decision)==1 and (decision[0][0],decision[0][4])==(identity,voice)
+                    and (identity,voice) not in ((self.current_row,self.current_voice),self.packed_binding)):
+                refresh = True
+
     def playback_event(self, event):
         self.record(**event)
         self.emit(playback=event)
@@ -60,6 +79,7 @@ class LogWorker(QtCore.QThread):
             self.jobs.set_current(None)
         if self.controller:
             self.controller.clear()
+        self.packed_binding = None
         self.current_row = self.current_voice = None
         self.emit(clear_line=True, status=status, audio_message='等待当前台词')
 
@@ -73,28 +93,15 @@ class LogWorker(QtCore.QThread):
         packed = self.pack.get((subtitle.state, subtitle.number))
         if packed:
             entry, clip = packed
-            source = rows[0] if len(rows)==1 else None
-            matches = not rows or (source is not None and source['id']==clip.catalog_id
-                                   and source['fingerprint']==entry['fingerprint']
-                                   and source['voice_status']!='voiced'
-                                   and not (source['voice_status']=='unknown' and source['reviewed_at']))
-            binding = catalog.binding(entry['speaker_id'])
-            explicit = catalog.db.execute('SELECT 1 FROM binding_origins WHERE speaker_id=?',
-                                          (entry['speaker_id'],)).fetchone()
-            if binding and (explicit or catalog.cloud_only() or binding['voice']!='system:default'):
-                matches = matches and binding['voice']==clip.binding_voice
-            from wuwa_cast_review import reviewed_roles, review_problem
-            roles = reviewed_roles(catalog,entry['quest'])
-            if roles is not None and entry['speaker_id'] in roles:
-                voice = clip.binding_voice.removeprefix('breeze:')
-                matches = matches and not review_problem(catalog,entry['quest'],entry['speaker_id'],voice)
-            if matches and self.controller:
+            if self.controller and pack_matches(catalog, rows, entry, clip):
                 if current_check and not current_check():
                     return
                 self.emit(observation=dict(body=clip.text,speaker=clip.speaker,subtitle_id=subtitle.number,
                                            flow=subtitle.flow,catalog_id=clip.catalog_id),log_line=subtitle.number,
                           task=dict(id=entry['quest'],name=entry['quest_name'],state='confirmed',basis='任务配音包'),
                           status='已匹配当前台词 · 任务配音包')
+                self.packed_binding = clip.catalog_id, clip.binding_voice
+                self.emit(history_clip=clip)
                 self.controller.available(clip)
                 return
         if len(rows)!=1:
@@ -144,7 +151,11 @@ class LogWorker(QtCore.QThread):
         if key in self.audio and self.controller:
             if current_check and not current_check():
                 return
+            active = catalog.binding(row['speaker_id'])
+            if not active or active['voice'] != key[1]:
+                return
             self.emit(status='已匹配当前台词 · 普通支线' if '普通支线规则' in basis else '已匹配当前台词')
+            self.emit(history_clip=self.audio[key])
             self.controller.available(self.audio[key])
         elif self.jobs:
             self.jobs.request(catalog,*key)
@@ -179,6 +190,7 @@ class LogWorker(QtCore.QThread):
                                    task_counts=dict(counts),review_count=0))
             from wuwa_dubber.audio.player import AudioPlayer
             self.controller=LogPlayback(AudioPlayer(settings.output_device,volume=settings.output_volume,latency='low'),self.playback_event)
+            self.emit(player_volume=self.controller.player.volume)
             if self.owns_jobs:
                 self.jobs=GenerationService(self.root,lambda msg:self.emit(generation_message=msg))
             stamp=None
@@ -191,6 +203,7 @@ class LogWorker(QtCore.QThread):
                     if proc and (pid!=proc.pid or not proc.is_running()):
                         log.close()
                         proc=log=None
+                        self.log_readable = False
                         self.game_pid=None
                         self.clear('游戏已断开')
                         last=object()
@@ -208,20 +221,27 @@ class LogWorker(QtCore.QThread):
                             self.version=version
                             self.audio.clear()
                             self.pack=load_pack(self.root)
-                        self.emit(log_connection='已连接鸣潮日志')
+                        self.emit(log_connection='等待读取本次游戏日志', game_attached=True)
                     if not proc:
                         self.emit(log_connection='等待鸣潮启动',status='等待鸣潮启动')
                 if log:
                     try:
                         subtitle=log.poll()
+                        if not self.log_readable:
+                            self.log_readable = True
+                            self.emit(log_connection='已连接鸣潮日志')
                         decision=(self.decision(catalog,subtitle),catalog.branch_rule_enabled())
-                        if subtitle!=last or decision!=stamp:
+                        refresh = self.needs_voice_refresh(decision[0])
+                        if subtitle!=last or decision!=stamp or refresh:
                             last=subtitle
                             self.apply(subtitle,catalog,config,
                                        current_check=lambda:proc.is_running() and log.poll()==subtitle)
                             stamp=(self.decision(catalog,subtitle),catalog.branch_rule_enabled())
                         self.process_jobs(log,subtitle,catalog)
                     except (OSError, ValueError) as exc:
+                        if self.log_readable:
+                            self.log_readable = False
+                            self.emit(log_connection='日志暂不可读')
                         self.clear(str(exc))
                         log.close()
                         last=object()
@@ -233,6 +253,7 @@ class LogWorker(QtCore.QThread):
             self.emit(status='日志配音出错 · '+str(exc))
             self.record(state='error',message=str(exc))
         finally:
+            self.log_readable = False
             if self.jobs:
                 self.jobs.set_current(None)
             if self.controller:
@@ -273,6 +294,7 @@ class LogWorker(QtCore.QThread):
                 break
             if clip:
                 self.audio[identity,voice]=clip
+                self.emit(history_clip=clip)
             if (identity,voice)!=(self.current_row,self.current_voice) or not log or not subtitle:
                 continue
             if error:

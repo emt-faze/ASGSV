@@ -1,0 +1,510 @@
+"""Task library: derive both views from the same set of playable local recordings."""
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+import json
+
+from PySide6 import QtCore as C, QtGui as G, QtWidgets as W
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+from dialogue_generation import BatchGenerator, file_digest
+from wuwa_catalog import Catalog, resolve_text
+from wuwa_breeze import strip_asides
+from wuwa_log_generation import existing_audio
+from wuwa_surface import AccentButton
+from wuwa_voice_pack import load_pack, pack_matches
+
+
+@dataclass
+class Quest:
+    name: str
+    ids: list = field(default_factory=list)
+    ready: int = 0
+
+    @property
+    def complete(self):
+        return bool(self.ids) and self.ready == len(self.ids)
+
+
+def playable(catalog, config):
+    exports, _, _ = existing_audio(catalog, config)
+    audio = {clip.catalog_id: clip for clip in exports.values()}
+    packed = {}
+    for (state, number), (entry, clip) in load_pack(catalog.root, allow_missing_audio=True).items():
+        rows = catalog.db.execute('SELECT * FROM lines WHERE state_id=? AND line_id=?', (state, number)).fetchall()
+        if not rows or (len(rows) == 1 and rows[0]['id'] == clip.catalog_id
+                        and rows[0]['fingerprint'] == entry['fingerprint'] and rows[0]['voice_status'] != 'voiced'):
+            packed[clip.catalog_id] = entry
+        if clip.path.is_file() and pack_matches(catalog, rows, entry, clip) and file_digest(clip.path) == clip.sha256:
+            audio[clip.catalog_id] = clip
+    return audio, packed
+
+
+def read_library(root):
+    catalog = Catalog(root)
+    try:
+        config = json.loads((root / 'config.json').read_text(encoding='utf8'))
+        audio, packed = playable(catalog, config)
+        quests = {}
+        for scope, name, identity, text in catalog.db.execute(
+            """SELECT s.id,s.name,l.id,l.raw_text FROM scopes s JOIN scope_lines sl ON sl.scope_id=s.id
+               JOIN lines l ON l.id=sl.line_id WHERE s.kind='quest' AND l.voice_status!='voiced'
+               ORDER BY s.name,s.id,l.flow_id,l.state_id,l.branch,CAST(l.line_id AS INTEGER),l.id"""
+        ):
+            if not any(ch.isalnum() for ch in strip_asides(text)):
+                continue
+            if scope not in quests:
+                quests[scope] = Quest(name)
+            quests[scope].ids.append(identity)
+        for identity, entry in packed.items():
+            scope = entry['quest']
+            quest = quests.setdefault(scope, Quest(entry['quest_name']))
+            if identity not in quest.ids:
+                quest.ids.append(identity)
+        for quest in quests.values():
+            quest.ready = sum(identity in audio for identity in quest.ids)
+        return quests, audio, packed
+    finally:
+        catalog.close()
+
+
+class IndexReader(C.QThread):
+    loaded = C.Signal(object)
+    failed = C.Signal(str)
+
+    def __init__(self, root, parent):
+        super().__init__(parent)
+        self.root = root
+
+    def run(self):
+        try:
+            self.loaded.emit(read_library(self.root))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+def choose_cloud_voice(catalog, sid, voice_id):
+    """An explicit speaker choice also updates that speaker's existing task cast entries."""
+    from wuwa_cast_review import original_problem
+    with catalog.db:
+        original = catalog.db.execute('SELECT profile FROM original_reference_cast WHERE speaker_id=?', (sid,)).fetchone()
+        problem = original_problem(catalog, sid, voice_id)
+        if original or problem:
+            raise ValueError(problem or '此角色沿用原声参考 · ' + original[0])
+        preset = catalog.db.execute('SELECT gender FROM breeze_presets WHERE id=?', (voice_id,)).fetchone()
+        if not preset:
+            raise ValueError('此音色已从云端预设库移除')
+        plans = catalog.db.execute("""SELECT DISTINCT r.quest_id,r.roles FROM quest_cast_reviews r
+            JOIN scope_lines s ON s.scope_id=r.quest_id JOIN lines l ON l.id=s.line_id
+            WHERE l.speaker_id=?""", (sid,)).fetchall()
+        for quest, raw in plans:
+            roles = json.loads(raw)
+            if sid in roles and roles[sid] != 'original':
+                roles[sid] = preset[0] if preset[0] in ('male', 'female') else 'any'
+                catalog.db.execute('UPDATE quest_cast_reviews SET roles=? WHERE quest_id=?',
+                                   (json.dumps(roles, sort_keys=True), quest))
+        catalog.db.execute('INSERT OR REPLACE INTO breeze_cast VALUES(?,?)', (sid, voice_id))
+
+
+def prepare_cast(catalog, scope, rows):
+    """Record the automatic cast of a newly selected task, retaining existing role choices."""
+    from wuwa_cast_review import reviewed_roles
+    if (not rows or not catalog.cloud_only() or catalog.meta('require_quest_cast_review') != '1'
+            or reviewed_roles(catalog, scope) is not None):
+        return
+    from wuwa_cast_context import quest_suggestion
+    members = catalog.lines([scope])
+    roles = {}
+    for row in members:
+        sid = row['speaker_id']
+        if sid in roles:
+            continue
+        if catalog.db.execute('SELECT 1 FROM original_voice_roles WHERE speaker_id=?', (sid,)).fetchone():
+            roles[sid] = 'original'
+        else:
+            assigned = catalog.db.execute('SELECT p.gender FROM breeze_cast c JOIN breeze_presets p ON p.id=c.voice_id WHERE c.speaker_id=?', (sid,)).fetchone()
+            gender = assigned[0] if assigned else quest_suggestion(members, sid, row['speaker'])[0]
+            roles[sid] = gender if gender in ('male', 'female') else 'any'
+    with catalog.db:
+        added = catalog.db.execute('INSERT OR IGNORE INTO quest_cast_reviews VALUES(?,?)',
+                                   (scope, json.dumps(roles, sort_keys=True))).rowcount
+        if added:
+            catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('cast_source:' + scope, 'automatic'))
+
+
+def generate_missing(root, scope, ids, stop, progress):
+    """Use the installed batch engine, including its voice, budget and cache checks."""
+    from wuwa_resources import inventory
+    config = json.loads((root / 'config.json').read_text(encoding='utf8'))
+    inventory(config['install_root'], root)
+    catalog = Catalog(root)
+    try:
+        available, _ = playable(catalog, config)
+        pending = set(ids).difference(available)
+        if not pending or stop.is_set():
+            return '当前任务无需新增录音'
+        version = catalog.local_version()
+        direct, single_lines, eligible = set(), [], []
+        if catalog.progress.account or (Path(config['install_root']) / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db').is_file():
+            catalog.progress.refresh(config['install_root'])
+        allowed = catalog.progress.allowed([scope], bool(config.get('allow_unknown_progress', False)))
+        for row in catalog.lines([scope]):
+            if row['id'] not in pending:
+                continue
+            if catalog.voice_basis(row, version):
+                if row['id'] not in allowed:
+                    continue
+                direct.add(row['id'])
+            elif catalog.voice_basis(row, version, allow_branch=catalog.branch_rule_enabled()):
+                single_lines.append(row)
+            else:
+                continue
+            eligible.append(row)
+
+        prepare_cast(catalog, scope, eligible)
+        done = 0
+        problems = []
+        def run_project(scopes, selected, single=False):
+            nonlocal done
+            project, _ = catalog.prepare_project(scopes, config, selected, live_line=single)
+            lock = C.QLockFile(str(project.directory / 'project.lock'))
+            lock.setStaleLockTime(0)
+            if not lock.tryLock(0):
+                raise ValueError('此配音项目正在其他窗口使用')
+            try:
+                runner = BatchGenerator(project, dict(config['dubbing'], catalog_root=str(root)),
+                                        lambda event: progress(event['message']) if event.get('message') else None)
+                runner.stop_event = stop
+                result = runner.run()
+                done += result['completed'] + result['resumed']
+                problems.extend(r.error for r in project.rows if r.error)
+            finally:
+                lock.unlock()
+
+        if direct and not stop.is_set():
+            try:
+                run_project([scope], direct)
+            except ValueError as exc:
+                problems.append(str(exc))
+        # Ordinary side quests use the same verified single-line preparation as the daily queue.
+        for row in single_lines:
+            if stop.is_set() or any('预算' in msg or 'API Key' in msg for msg in problems):
+                break
+            try:
+                run_project(['flow:' + row['flow_id']], {row['id']}, single=True)
+            except (OSError, ValueError) as exc:
+                problems.append(str(exc))
+        message = f'本次完成 {done} 句'
+        if stop.is_set():
+            return message + ' · 已停止'
+        if problems:
+            detail = problems[0]
+            if '在任务库' in detail or '声线还没有确认' in detail:
+                detail = '请点击对白中的角色名选择可用音色'
+            return message + ' · ' + detail
+        if done < len(pending):
+            return message + ' · 其余台词当前无法合成'
+        return message
+    finally:
+        catalog.close()
+
+
+class QuestLibrary(W.QWidget):
+    voice_requested = C.Signal(object)
+    generate_requested = C.Signal(str, object)
+    notice = C.Signal(str)
+    page_size = 40
+
+    def __init__(self, catalog, parent=None):
+        super().__init__(parent)
+        self.catalog = catalog
+        self.quests, self.audio, self.packed = {}, {}, {}
+        self.rows = []
+        self.scope = None
+        self.requested_scope = None
+        self.page_number = 0
+        self.busy = False
+        self.reload_pending = False
+        self.closing = False
+        self.reader = IndexReader(catalog.root, self)
+        self.reader.loaded.connect(self.loaded)
+        self.reader.failed.connect(self.index_failed)
+        self.reader.finished.connect(self.scan_finished)
+        self.player = QMediaPlayer(self)
+        self.output = QAudioOutput(self)
+        self.player.setAudioOutput(self.output)
+        self.player.errorOccurred.connect(lambda _, message: self.notice.emit('试听失败 · ' + message))
+        layout = W.QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 8)
+        layout.setSpacing(10)
+        filters = W.QHBoxLayout()
+        group = W.QButtonGroup(self)
+        self.pills = []
+        for complete, label in enumerate(('未配音任务', '已配音任务')):
+            button = W.QPushButton(label + ' (…)')
+            button.setCheckable(True)
+            button.setObjectName('questPill')
+            button.setCursor(C.Qt.PointingHandCursor)
+            group.addButton(button, complete)
+            filters.addWidget(button)
+            self.pills.append(button)
+        self.pills[0].setChecked(True)
+        group.idClicked.connect(self.filter_changed)
+        filters.addStretch()
+        self.search = W.QLineEdit()
+        self.search.setPlaceholderText('搜索任务名称')
+        self.search.setAccessibleName('搜索任务名称')
+        self.search.setClearButtonEnabled(True)
+        self.search.setMaximumWidth(240)
+        self.search.textChanged.connect(self.filter_changed)
+        filters.addWidget(self.search, 1)
+        self.prev = AccentButton('', 'previous')
+        self.next = AccentButton('', 'next')
+        self.page = W.QLabel()
+        for btn, label, step in ((self.prev, '上一页', -1), (self.next, '下一页', 1)):
+            btn.setAccessibleName(label)
+            btn.setToolTip(label)
+            btn.clicked.connect(lambda _, n=step: self.turn_page(n))
+        for widget in (self.prev, self.page, self.next):
+            filters.addWidget(widget)
+        layout.addLayout(filters)
+        split = W.QSplitter()
+        split.setChildrenCollapsible(False)
+        layout.addWidget(split, 1)
+        self.tasks = self.table(['任务名称','句数','状态'], 0)
+        self.tasks.setColumnWidth(1, 48)
+        self.tasks.setColumnWidth(2, 85)
+        self.tasks.setMinimumWidth(235)
+        split.addWidget(self.tasks)
+        right = W.QWidget()
+        detail = W.QVBoxLayout(right)
+        detail.setContentsMargins(8, 0, 0, 0)
+        self.lines = self.table(['角色','台词正文','音频状态'], 1)
+        self.lines.setWordWrap(True)
+        self.lines.verticalHeader().setMinimumSectionSize(34)
+        self.lines.verticalHeader().setSectionResizeMode(W.QHeaderView.ResizeToContents)
+        self.lines.setColumnWidth(0, 100)
+        self.lines.setColumnWidth(2, 76)
+        detail.addWidget(self.lines, 1)
+        self.summary = W.QLabel()
+        self.summary.setObjectName('subtle')
+        detail.addWidget(self.summary)
+        actions = W.QHBoxLayout()
+        self.generate = W.QPushButton('一键生成本任务配音')
+        self.generate.setObjectName('primary')
+        self.generate.clicked.connect(self.generate_current)
+        self.preview = AccentButton('试听当前句', 'play')
+        self.preview.clicked.connect(self.preview_current)
+        actions.addWidget(self.generate)
+        actions.addWidget(self.preview)
+        actions.addStretch()
+        detail.addLayout(actions)
+        split.addWidget(right)
+        split.setSizes([370, 650])
+        self.tasks.currentCellChanged.connect(self.select_task)
+        self.lines.currentCellChanged.connect(self.update_actions)
+        self.lines.cellClicked.connect(self.role_clicked)
+        role_key = G.QShortcut(G.QKeySequence(C.Qt.Key_Return), self.lines)
+        role_key.setContext(C.Qt.WidgetShortcut)
+        role_key.activated.connect(lambda: self.role_clicked(self.lines.currentRow(), self.lines.currentColumn()))
+        self.setStyleSheet("""
+            QPushButton#questPill {background:#192328; color:#ABBDC3; border:1px solid #33464E;
+                border-radius:14px; padding:5px 13px;}
+            QPushButton#questPill:checked {background:#D8B467; border-color:#E8C880; color:#11181B; font-weight:600;}
+            QLabel#questStatus {background:#253237; color:#ADBDC2; border-radius:9px; padding:1px 8px;}
+            QLabel#questStatus[ready="true"] {background:#183B35; color:#86DEC1;}
+        """)
+        self.update_actions()
+        self.prev.setEnabled(False)
+        self.next.setEnabled(False)
+
+    @staticmethod
+    def table(headers, stretch):
+        table = W.QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setEditTriggers(W.QAbstractItemView.NoEditTriggers)
+        table.setSelectionMode(W.QAbstractItemView.SingleSelection)
+        table.setSelectionBehavior(W.QAbstractItemView.SelectRows)
+        table.verticalHeader().hide()
+        table.verticalHeader().setDefaultSectionSize(36)
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(stretch, W.QHeaderView.Stretch)
+        return table
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.reload()
+
+    def hideEvent(self, event):
+        self.player.stop()
+        super().hideEvent(event)
+
+    def shutdown(self):
+        self.closing = True
+        self.player.stop()
+        self.reader.wait()
+
+    def reload(self):
+        if self.closing:
+            return
+        if self.reader.isRunning():
+            self.reload_pending = True
+        elif self.isVisible():
+            self.reader.start()
+        self.update_actions()
+
+    def scan_finished(self):
+        if self.closing:
+            return
+        if self.reload_pending:
+            self.reload_pending = False
+            self.reload()
+        else:
+            self.update_actions()
+
+    def index_failed(self, message):
+        if self.closing:
+            return
+        self.quests, self.audio, self.packed = {}, {}, {}
+        self.render()
+        self.notice.emit('任务库读取失败 · ' + message)
+
+    def loaded(self, result):
+        if self.closing:
+            return
+        self.quests, self.audio, self.packed = result
+        if self.requested_scope and self.requested_scope not in self.quests:
+            self.requested_scope = None
+            self.notice.emit('该任务没有可列出的预配音台词')
+        if self.requested_scope in self.quests:
+            self.focus_scope(self.requested_scope)
+        else:
+            self.render()
+
+    def focus_scope(self, scope):
+        self.requested_scope = scope
+        if scope not in self.quests:
+            return
+        self.requested_scope = None
+        self.scope = scope
+        self.pills[int(self.quests[scope].complete)].setChecked(True)
+        with C.QSignalBlocker(self.search):
+            self.search.clear()
+        self.render(locate=True)
+
+    def filter_changed(self, *_):
+        self.page_number = 0
+        self.render()
+
+    def turn_page(self, step):
+        self.page_number += step
+        self.render()
+
+    def render(self, locate=False):
+        text = self.search.text().strip().casefold()
+        visible = [(sid,q) for sid,q in self.quests.items() if text in q.name.casefold()]
+        counts = Counter(q.complete for _,q in visible)
+        for i, label in enumerate(('未配音任务','已配音任务')):
+            self.pills[i].setText(f'{label} ({counts[bool(i)]})')
+        scopes = [scope for scope,quest in visible if quest.complete == self.pills[1].isChecked()]
+        pages = (len(scopes) + self.page_size - 1) // self.page_size
+        if locate and self.scope in scopes:
+            self.page_number = scopes.index(self.scope) // self.page_size
+        self.page_number = max(0, min(self.page_number, pages - 1))
+        self.page.setText(f'{self.page_number + 1 if pages else 0} / {pages}')
+        self.prev.setEnabled(self.page_number > 0)
+        self.next.setEnabled(self.page_number + 1 < pages)
+        start = self.page_number * self.page_size
+        page = scopes[start:start+self.page_size]
+        with C.QSignalBlocker(self.tasks):
+            self.tasks.clearContents()
+            self.tasks.setRowCount(len(page))
+            for i,sid in enumerate(page):
+                q = self.quests[sid]
+                name = W.QTableWidgetItem(q.name)
+                name.setData(C.Qt.UserRole, sid)
+                name.setToolTip(q.name)
+                self.tasks.setItem(i,0,name)
+                self.tasks.setItem(i,1,W.QTableWidgetItem(str(len(q.ids))))
+                status = '已配音' if q.complete else '未配音'
+                self.tasks.setItem(i,2,W.QTableWidgetItem(''))
+                self.tasks.item(i,2).setData(C.Qt.AccessibleTextRole,status)
+                container = W.QWidget()
+                container.setAttribute(C.Qt.WA_TransparentForMouseEvents)
+                row = W.QHBoxLayout(container)
+                row.setContentsMargins(4,0,4,0)
+                badge = W.QLabel(status)
+                badge.setObjectName('questStatus')
+                badge.setProperty('ready', q.complete)
+                row.addWidget(badge,0,C.Qt.AlignLeft | C.Qt.AlignVCenter)
+                self.tasks.setCellWidget(i,2,container)
+            if page:
+                self.tasks.setCurrentCell(page.index(self.scope) if self.scope in page else 0,0)
+        self.select_task()
+
+    def select_task(self, *_):
+        item = self.tasks.item(self.tasks.currentRow(),0)
+        sid = item.data(C.Qt.UserRole) if item else None
+        old_row = self.lines.currentRow()
+        previous = self.rows[old_row]['id'] if sid == self.scope and 0 <= old_row < len(self.rows) else None
+        self.scope = sid
+        ids = self.quests[sid].ids if sid else []
+        indexed = {r['id']:r for r in self.catalog.lines([sid])} if sid else {}
+        self.rows = [indexed.get(i) or self.packed[i] for i in ids if i in indexed or i in self.packed]
+        self.player.stop()
+        cfg = json.loads((self.catalog.root/'config.json').read_text(encoding='utf8'))
+        with C.QSignalBlocker(self.lines):
+            self.lines.setRowCount(len(self.rows))
+            selected = 0
+            for i,r in enumerate(self.rows):
+                if 'raw_text' in r.keys():
+                    body, _ = resolve_text(r['raw_text'],cfg.get('nickname','漂泊者'),cfg.get('traveler_gender','female'))
+                else:
+                    body = r['text']
+                for col,text in enumerate((r['speaker'],body,'已生成' if r['id'] in self.audio else '未生成')):
+                    cell = W.QTableWidgetItem(text)
+                    cell.setToolTip('切换角色音色 · '+text if col==0 else text)
+                    if col==0:
+                        cell.setForeground(G.QColor('#D8B467'))
+                    self.lines.setItem(i,col,cell)
+                if r['id']==previous:
+                    selected=i
+            if self.rows:
+                self.lines.setCurrentCell(selected,1)
+        self.update_actions()
+
+    def update_actions(self, *_):
+        q = self.quests.get(self.scope)
+        row = self.lines.currentRow()
+        self.summary.setText(f'共 {len(q.ids)} 句 · 已生成 {q.ready} 句' if q else
+                             '正在读取本地录音…' if self.reader.isRunning() else '没有匹配的任务')
+        self.generate.setEnabled(bool(q and not q.complete and not self.busy and not self.reader.isRunning()))
+        self.preview.setEnabled(bool(not self.reader.isRunning() and 0 <= row < len(self.rows) and self.rows[row]['id'] in self.audio))
+
+    def generate_current(self):
+        q = self.quests.get(self.scope)
+        if q and self.generate.isEnabled():
+            self.generate_requested.emit(self.scope, [i for i in q.ids if i not in self.audio])
+
+    def preview_current(self):
+        row = self.lines.currentRow()
+        if not 0 <= row < len(self.rows):
+            return
+        clip = self.audio.get(self.rows[row]['id'])
+        if not clip:
+            return
+        if not clip.path.is_file() or file_digest(clip.path) != clip.sha256:
+            self.notice.emit('录音已变化，正在刷新任务库')
+            self.reload()
+            return
+        self.player.stop()
+        self.player.setSource(C.QUrl.fromLocalFile(str(clip.path)))
+        self.player.play()
+
+    def role_clicked(self, row, column):
+        if column==0 and not self.busy and 0 <= row < len(self.rows):
+            self.player.stop()
+            self.voice_requested.emit(self.rows[row])

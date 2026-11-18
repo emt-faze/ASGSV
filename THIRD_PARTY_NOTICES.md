@@ -1,6 +1,6 @@
 # 第三方来源与许可
 
-第三方运行依赖通过安装脚本下载。推荐发布 ZIP 附带四个 RapidOCR ONNX 模型，源码包不附带 OCR 模型；两个包均附带约 1.25 MB 的 Silero VAD 音频边界模型及其 MIT 许可；TTS 模型权重和个人参考录音均不包含。OCR 模型的固定版本、SHA-256 和 Apache-2.0 许可，以及原有游戏界面模板的来源与 GPL 许可，见 nte-dialogue-ocr/THIRD_PARTY_NOTICES.md 和 assets 中的许可证文件。
+源码版的第三方运行依赖通过安装脚本下载。推荐发布 ZIP 附带四个 RapidOCR ONNX 模型，源码包不附带 OCR 模型；两个包均附带约 1.25 MB 的 Silero VAD 音频边界模型及其 MIT 许可；TTS 模型权重和个人参考录音均不包含。OCR 模型的固定版本、SHA-256 和 Apache-2.0 许可，以及原有游戏界面模板的来源与 GPL 许可，见 nte-dialogue-ocr/THIRD_PARTY_NOTICES.md 和 assets 中的许可证文件。
 
 | 组件 | 官方来源 | 许可说明 |
 | --- | --- | --- |
@@ -24,3 +24,7 @@
 ## 鸣潮日志与任务语音包
 
 日志解码组件取自 KamikoshiSorawo/ww-log-decryptor，MIT 许可及固定版本信息位于 nte-dialogue-ocr/ww_log_decoder。任务包使用 AI 合成的中文对白，不含训练素材、角色参考录音或模型权重。游戏、角色、剧情和第三方服务的权利仍归各自权利人所有。
+
+## Windows 便携版运行时
+
+便携包使用 Python 3.12.10 官方 Windows 嵌入式运行时，许可证在 `runtime/LICENSE.txt`。Qt for Python、Qt、Qt 多媒体的 FFmpeg 库和其他 Python 依赖在 `runtime/Lib/site-packages` 动态加载。对应的包元数据和随轮子提供的许可证保留在各自的 `.dist-info` 目录。相关源代码见 [CPython 3.12.10](https://github.com/python/cpython/tree/v3.12.10)、[Qt for Python](https://code.qt.io/cgit/pyside/pyside-setup.git/)、[Qt](https://code.qt.io/cgit/qt/) 和 [FFmpeg](https://ffmpeg.org/download.html)。可按包内记录的版本替换动态链接库。微软 Visual C++ 运行库随来自上游的 Python 和 PySide6 发布文件提供。

@@ -5,6 +5,11 @@ if (-not (Test-Path -LiteralPath $compiler)) {
 }
 $output = Join-Path (Split-Path -Parent $PSScriptRoot) 'ASGSV.exe'
 $source = Join-Path $PSScriptRoot 'Launcher.cs'
-& $compiler /nologo /target:winexe /platform:anycpu /optimize+ /reference:System.Windows.Forms.dll "/out:$output" $source
+$root = Split-Path -Parent $PSScriptRoot
+$icon = Join-Path $root 'assets\app_icon.ico'
+if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) {
+    $icon = Join-Path $root 'DG\assets\app_icon.ico'
+}
+& $compiler "/win32icon:$icon" /nologo /target:winexe /platform:anycpu /optimize+ /reference:System.Windows.Forms.dll "/out:$output" $source
 if ($LASTEXITCODE -ne 0) { throw 'Launcher compilation failed.' }
 Get-Item -LiteralPath $output | Select-Object FullName, Length
