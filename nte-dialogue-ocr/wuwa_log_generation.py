@@ -7,7 +7,7 @@ import shutil
 import threading
 from uuid import uuid4
 
-from dialogue_dubbing import VoiceRuntime, voice_paths
+from dialogue_dubbing import VoiceRuntime, voice_code_path, voice_paths
 from dialogue_generation import BatchGenerator, GenerationProject, select_voice, _publish_export, timestamp
 from prepared_playback import PreparedLine
 from wuwa_catalog import Catalog, resolve_text
@@ -37,7 +37,10 @@ def prepared_line(project, row):
 
 def existing_audio(catalog,config,only=None):
     """Tie WAVs to exact catalog identity, current text, reference and binding."""
-    voice_paths(config['dubbing'])
+    if catalog.cloud_only():
+        voice_code_path(config['dubbing'])
+    else:
+        voice_paths(config['dubbing'])
     audio, runtime, signatures, used, held = {}, {}, {}, set(), []
     version=catalog.local_version()
     for project in projects(catalog.root):
@@ -89,7 +92,7 @@ def existing_audio(catalog,config,only=None):
     return audio,sorted(used),held
 
 
-def export_cloud(catalog, project, entry, cloud_voice, still_current, stop, lock):
+def export_cloud(catalog, project, entry, cloud_voice, still_current, stop, lock, *, max_daily_credits=None):
     from wuwa_cast_review import line_problem
     problem = line_problem(catalog,entry.source_id,entry.evidence['speaker_id'],cloud_voice)
     if problem:
@@ -101,7 +104,8 @@ def export_cloud(catalog, project, entry, cloud_voice, still_current, stop, lock
         return still_current()
     direction=breeze.line_direction(catalog,entry.source_id,cloud_voice)
     spoken=breeze.spoken_text(entry.text,catalog.root)
-    cached,hit=breeze.cached_wav(catalog,entry.text,cloud_voice,reviewed_and_current,direction,spoken=spoken)
+    options = {} if max_daily_credits is None else {'max_daily_credits': max_daily_credits}
+    cached,hit=breeze.cached_wav(catalog,entry.text,cloud_voice,reviewed_and_current,direction,spoken=spoken,**options)
     folder=project.directory/'audio'
     folder.mkdir(exist_ok=True)
     stage=folder/('.'+uuid4().hex+'.wav')

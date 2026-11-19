@@ -20,6 +20,7 @@ class Quest:
     name: str
     ids: list = field(default_factory=list)
     ready: int = 0
+    evidence: str = ""
 
     @property
     def complete(self):
@@ -45,22 +46,37 @@ def read_library(root):
     try:
         config = json.loads((root / 'config.json').read_text(encoding='utf8'))
         audio, packed = playable(catalog, config)
+        from wuwa_daily_plan import initialize
+        from wuwa_daily_scan import matched_lines
+        from wuwa_quest_names import repair,title
+        initialize(catalog)
+        repair(catalog)
+        account=catalog.meta('daily_scan_account')
+        discovered={scope:(name,reason) for scope,name,reason in catalog.db.execute(
+            'SELECT scope,name,evidence FROM daily_discovered WHERE account=?',(account,))}
+        manifest=root/'sources/local-inventory.json'
+        verified=matched_lines(json.loads(manifest.read_text(encoding='utf8'))) if discovered and manifest.is_file() else {}
         quests = {}
         for scope, name, identity, text in catalog.db.execute(
             """SELECT s.id,s.name,l.id,l.raw_text FROM scopes s JOIN scope_lines sl ON sl.scope_id=s.id
                JOIN lines l ON l.id=sl.line_id WHERE s.kind='quest' AND l.voice_status!='voiced'
                ORDER BY s.name,s.id,l.flow_id,l.state_id,l.branch,CAST(l.line_id AS INTEGER),l.id"""
         ):
+            if scope in discovered and scope in verified and identity not in verified[scope]:
+                continue
             if not any(ch.isalnum() for ch in strip_asides(text)):
                 continue
             if scope not in quests:
-                quests[scope] = Quest(name)
+                quests[scope] = Quest(title(scope[6:],name))
             quests[scope].ids.append(identity)
         for identity, entry in packed.items():
             scope = entry['quest']
             quest = quests.setdefault(scope, Quest(entry['quest_name']))
             if identity not in quest.ids:
                 quest.ids.append(identity)
+        for scope,(name,reason) in discovered.items():
+            q=quests.setdefault(scope,Quest(title(scope[6:],name)))
+            q.evidence=reason
         for quest in quests.values():
             quest.ready = sum(identity in audio for identity in quest.ids)
         return quests, audio, packed
@@ -132,11 +148,11 @@ def prepare_cast(catalog, scope, rows):
             catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('cast_source:' + scope, 'automatic'))
 
 
-def generate_missing(root, scope, ids, stop, progress):
+def generate_missing(root, scope, ids, stop, progress, on_ready=None):
     """Use the installed batch engine, including its voice, budget and cache checks."""
     from wuwa_resources import inventory
     config = json.loads((root / 'config.json').read_text(encoding='utf8'))
-    inventory(config['install_root'], root)
+    mounted=inventory(config['install_root'], root)
     catalog = Catalog(root)
     try:
         available, _ = playable(catalog, config)
@@ -147,17 +163,39 @@ def generate_missing(root, scope, ids, stop, progress):
         direct, single_lines, eligible = set(), [], []
         if catalog.progress.account or (Path(config['install_root']) / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db').is_file():
             catalog.progress.refresh(config['install_root'])
+        from wuwa_daily_plan import initialize
+        from wuwa_daily_scan import scan,matched_lines
+        initialize(catalog)
+        seen=catalog.db.execute('SELECT 1 FROM daily_discovered WHERE account=? AND scope=?',
+                                (catalog.meta('daily_scan_account'),scope)).fetchone()
+        confirmed={}
+        if seen:
+            active_account, latest = scan(catalog,config)
+            if active_account!=catalog.meta('daily_scan_account') or scope not in {s for s,_,_ in latest}:
+                raise ValueError('当前账号或任务进度已变化，请重新扫描支线')
+            confirmed=matched_lines(mounted).get(scope,{})
+            if not confirmed:
+                raise ValueError('当前游戏版本的任务指纹尚未覆盖本任务')
+        blocked=Counter()
         allowed = catalog.progress.allowed([scope], bool(config.get('allow_unknown_progress', False)))
         for row in catalog.lines([scope]):
             if row['id'] not in pending:
                 continue
-            if catalog.voice_basis(row, version):
+            known=confirmed.get(row['id'])==row['fingerprint']
+            if seen and not known:
+                blocked['游戏台词指纹未匹配']+=1
+                continue
+            if known and catalog.voice_basis(row,version,allow_branch=catalog.branch_rule_enabled()):
+                single_lines.append(row)
+            elif catalog.voice_basis(row, version):
                 if row['id'] not in allowed:
+                    blocked['未取得当前账号的未完成证据']+=1
                     continue
                 direct.add(row['id'])
             elif catalog.voice_basis(row, version, allow_branch=catalog.branch_rule_enabled()):
                 single_lines.append(row)
             else:
+                blocked['原声或资源版本未核实']+=1
                 continue
             eligible.append(row)
 
@@ -177,6 +215,12 @@ def generate_missing(root, scope, ids, stop, progress):
                 runner.stop_event = stop
                 result = runner.run()
                 done += result['completed'] + result['resumed']
+                from wuwa_log_generation import prepared_line
+                for entry in project.rows:
+                    clip=prepared_line(project,entry)
+                    if clip and on_ready:
+                        on_ready(entry.source_id,clip)
+                progress(f'已就绪 {done}/{len(pending)} 句')
                 problems.extend(r.error for r in project.rows if r.error)
             finally:
                 lock.unlock()
@@ -187,10 +231,14 @@ def generate_missing(root, scope, ids, stop, progress):
             except ValueError as exc:
                 problems.append(str(exc))
         # Ordinary side quests use the same verified single-line preparation as the daily queue.
+        members=catalog.lines([scope])
         for row in single_lines:
             if stop.is_set() or any('预算' in msg or 'API Key' in msg for msg in problems):
                 break
             try:
+                if catalog.cloud_only() and catalog.meta('daily_cast_enabled')=='1' and not catalog.binding(row['speaker_id']):
+                    from wuwa_daily_cast import voice_for
+                    voice_for(catalog,scope,row,members)
                 run_project(['flow:' + row['flow_id']], {row['id']}, single=True)
             except (OSError, ValueError) as exc:
                 problems.append(str(exc))
@@ -203,7 +251,7 @@ def generate_missing(root, scope, ids, stop, progress):
                 detail = '请点击对白中的角色名选择可用音色'
             return message + ' · ' + detail
         if done < len(pending):
-            return message + ' · 其余台词当前无法合成'
+            return message + ' · '+('；'.join(f'{why} {n} 句' for why,n in blocked.items()) or '缺少可用的台词或声线')
         return message
     finally:
         catalog.close()
@@ -213,7 +261,16 @@ class QuestLibrary(W.QWidget):
     voice_requested = C.Signal(object)
     generate_requested = C.Signal(str, object)
     notice = C.Signal(str)
+    line_ready = C.Signal(str,object)
     page_size = 40
+
+    def open_daily_plan(self):
+        from wuwa_daily_ui import DailyDialog
+        dialog = DailyDialog(self.catalog, self)
+        dialog.scan_changed.connect(self.scanned)
+        dialog.exec()
+        dialog.deleteLater()
+        self.reload()
 
     def __init__(self, catalog, parent=None):
         super().__init__(parent)
@@ -226,6 +283,10 @@ class QuestLibrary(W.QWidget):
         self.busy = False
         self.reload_pending = False
         self.closing = False
+        self.revision=None
+        self.catalog_poll=C.QTimer(self)
+        self.catalog_poll.setInterval(1800)
+        self.catalog_poll.timeout.connect(self.check_catalog)
         self.reader = IndexReader(catalog.root, self)
         self.reader.loaded.connect(self.loaded)
         self.reader.failed.connect(self.index_failed)
@@ -251,6 +312,13 @@ class QuestLibrary(W.QWidget):
         self.pills[0].setChecked(True)
         group.idClicked.connect(self.filter_changed)
         filters.addStretch()
+        self.daily_plan_button = W.QPushButton('每日配音计划')
+        self.daily_plan_button.clicked.connect(self.open_daily_plan)
+        self.discovered_only=W.QCheckBox('扫描到的支线')
+        self.discovered_only.setChecked(bool(catalog.meta('daily_scan_account')))
+        self.discovered_only.toggled.connect(self.filter_changed)
+        filters.addWidget(self.discovered_only)
+        filters.addWidget(self.daily_plan_button)
         self.search = W.QLineEdit()
         self.search.setPlaceholderText('搜索任务名称')
         self.search.setAccessibleName('搜索任务名称')
@@ -289,6 +357,11 @@ class QuestLibrary(W.QWidget):
         self.summary = W.QLabel()
         self.summary.setObjectName('subtle')
         detail.addWidget(self.summary)
+        self.work_note=W.QLabel()
+        self.work_note.setWordWrap(True)
+        self.work_note.hide()
+        detail.addWidget(self.work_note)
+        self.line_ready.connect(self.mark_ready)
         actions = W.QHBoxLayout()
         self.generate = W.QPushButton('一键生成本任务配音')
         self.generate.setObjectName('primary')
@@ -334,18 +407,46 @@ class QuestLibrary(W.QWidget):
         header.setSectionResizeMode(stretch, W.QHeaderView.Stretch)
         return table
 
+    def check_catalog(self):
+        revision=(self.catalog.meta('daily_scan_revision'),self.catalog.meta('daily_updated'))
+        if revision!=self.revision:
+            self.revision=revision
+            self.reload()
+
     def showEvent(self, event):
         super().showEvent(event)
+        self.catalog_poll.start()
+        self.check_catalog()
         self.reload()
 
     def hideEvent(self, event):
+        self.catalog_poll.stop()
         self.player.stop()
         super().hideEvent(event)
 
     def shutdown(self):
         self.closing = True
+        self.catalog_poll.stop()
         self.player.stop()
         self.reader.wait()
+
+    def set_work_status(self,text):
+        self.work_note.setText(text)
+        self.work_note.setVisible(bool(text))
+
+    def scanned(self):
+        self.discovered_only.setChecked(True)
+        self.reload()
+
+    def mark_ready(self,identity,clip):
+        self.audio[identity]=clip
+        for quest in self.quests.values():
+            if identity in quest.ids:
+                quest.ready=sum(i in self.audio for i in quest.ids)
+        for i,row in enumerate(self.rows):
+            if row['id']==identity:
+                self.lines.item(i,2).setText('已生成')
+        self.update_actions()
 
     def reload(self):
         if self.closing:
@@ -390,6 +491,8 @@ class QuestLibrary(W.QWidget):
             return
         self.requested_scope = None
         self.scope = scope
+        if not self.quests[scope].evidence:
+            self.discovered_only.setChecked(False)
         self.pills[int(self.quests[scope].complete)].setChecked(True)
         with C.QSignalBlocker(self.search):
             self.search.clear()
@@ -405,7 +508,7 @@ class QuestLibrary(W.QWidget):
 
     def render(self, locate=False):
         text = self.search.text().strip().casefold()
-        visible = [(sid,q) for sid,q in self.quests.items() if text in q.name.casefold()]
+        visible = [(sid,q) for sid,q in self.quests.items() if text in q.name.casefold() and (not self.discovered_only.isChecked() or q.evidence)]
         counts = Counter(q.complete for _,q in visible)
         for i, label in enumerate(('未配音任务','已配音任务')):
             self.pills[i].setText(f'{label} ({counts[bool(i)]})')
@@ -426,7 +529,7 @@ class QuestLibrary(W.QWidget):
                 q = self.quests[sid]
                 name = W.QTableWidgetItem(q.name)
                 name.setData(C.Qt.UserRole, sid)
-                name.setToolTip(q.name)
+                name.setToolTip(q.name+((" · "+q.evidence) if q.evidence else ""))
                 self.tasks.setItem(i,0,name)
                 self.tasks.setItem(i,1,W.QTableWidgetItem(str(len(q.ids))))
                 status = '已配音' if q.complete else '未配音'
@@ -481,7 +584,7 @@ class QuestLibrary(W.QWidget):
         row = self.lines.currentRow()
         self.summary.setText(f'共 {len(q.ids)} 句 · 已生成 {q.ready} 句' if q else
                              '正在读取本地录音…' if self.reader.isRunning() else '没有匹配的任务')
-        self.generate.setEnabled(bool(q and not q.complete and not self.busy and not self.reader.isRunning()))
+        self.generate.setEnabled(bool(q and q.ids and not q.complete and not self.busy and not self.reader.isRunning()))
         self.preview.setEnabled(bool(not self.reader.isRunning() and 0 <= row < len(self.rows) and self.rows[row]['id'] in self.audio))
 
     def generate_current(self):

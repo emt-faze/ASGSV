@@ -61,6 +61,29 @@ class LogPlaybackTests(unittest.TestCase):
             state.feed(line)
         self.assertEqual((state.current.flow,state.current.number),('测试_57','2'))
 
+    def test_duplicate_open_for_visible_plot_preserves_subtitle_context(self):
+        state = Plot()
+        for line in flow():
+            state.feed(line)
+        duplicate_open = ('[Plot] [PlotView] 请求打开界面 '
+                          '[new: PlotView][current: PlotView][ownerId: 81]')
+        for line in (duplicate_open, '[Plot] [PlotView] 重复打开', display(1)):
+            state.feed(line)
+        self.assertIsNotNone(state.current)
+        self.assertEqual((state.current.instance, state.current.state, state.current.number),
+                         ('81', '测试_56_1', '1'))
+
+        current = state.current
+        state.feed(duplicate_open)
+        self.assertIs(state.current, current)
+        state.feed(display(2))
+        self.assertEqual(state.current.number, '2')
+
+        state.feed('[Plot] [PlotView] ViewChange [name: PlotView][isShow: False]')
+        state.feed(duplicate_open)
+        state.feed(display(3))
+        self.assertIsNone(state.current)
+
     def test_serial_audio_aborts_previous_before_next_start(self):
         with tempfile.TemporaryDirectory() as folder:
             sounds=[]

@@ -23,17 +23,21 @@ def resolved_path(value, base=ROOT):
     return (path if path.is_absolute() else base / path).resolve()
 
 
-def voice_paths(options):
+def voice_code_path(options):
     code = resolved_path(options.get("code_root", "../wuwa-dubber"))
-    default_data = code / "data"
-    data = resolved_path(options.get("data_root", str(default_data if default_data.is_dir() else code / "data")))
     if not (code / "src/wuwa_dubber/speech_session.py").is_file():
         raise ValueError(f"找不到配音程序：{code}，请检查配音路径配置")
-    if not (data / "config.json").is_file():
-        raise ValueError(f"找不到声线设置：{data / 'config.json'}")
     source = str(code / "src")
     if source not in sys.path:
         sys.path.insert(0, source)
+    return code
+
+
+def voice_paths(options):
+    code = voice_code_path(options)
+    data = resolved_path(options.get("data_root", str(code / "data")))
+    if not (data / "config.json").is_file():
+        raise ValueError(f"找不到声线设置：{data / 'config.json'}")
     return code, data
 
 

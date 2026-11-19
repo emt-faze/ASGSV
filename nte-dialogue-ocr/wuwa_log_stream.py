@@ -83,7 +83,12 @@ class Plot:
                 self.current = self.owner = None
                 self.visible = False
             elif '请求打开界面' in line:
-                self.owner = fields.get('ownerid')
+                owner = fields.get('ownerid')
+                # The game can request the same view again after ViewChange(True)
+                # without another visibility event before the next subtitle.
+                if self.visible and owner == self.owner and fields.get('current') == 'PlotView':
+                    return
+                self.owner = owner
                 self.visible = False
                 self.current = None
             elif 'ViewChange' in line and fields.get('isshow') == 'True':

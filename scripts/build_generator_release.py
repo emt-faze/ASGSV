@@ -16,6 +16,7 @@ def source_files(root=ROOT):
     selected = set(build_release.source_files(root))
     selected.update(root/name for name in ('安装台词生成工具.bat', '打开台词生成工具.bat', '设置默认角色声线.bat', '安装声线自动转写.bat'))
     ocr = root/'nte-dialogue-ocr'
+    selected.add(ocr/'assets/daily-quest-fingerprints.json.gz')
     top = {'.gitignore', '.gitattributes', 'VERSION', 'GENERATOR_VERSION', 'README.md',
            'THIRD_PARTY_NOTICES.md', 'requirements.txt', 'config.example.json', '台词生成工具使用说明.txt',
            'voice-library-runtime.example.json'}

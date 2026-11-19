@@ -66,7 +66,7 @@ class SampleLookup(C.QObject):
         try:
             secret = api_key()
             if not secret:
-                raise ValueError('请先在设置中填写 BreezeBlue 密钥')
+                raise ValueError('请在每日计划的「配音与预算」中填写 BreezeBlue 密钥')
             req = Request('https://api.breeze.blue/v1/voices/'+voice_id(self.voice),
                           headers={'xi-api-key':secret})
             with build_opener(NoRedirect()).open(req,timeout=10) as response:

@@ -73,8 +73,8 @@ class AudioQualityError(ValueError):
     pass
 
 
-def refresh_presets(catalog):
-    key = api_key()
+def refresh_presets(catalog, *, key=None):
+    key = key or api_key()
     if not key:
         raise ValueError('请先填写 BreezeBlue 密钥')
     presets = {}
@@ -192,7 +192,7 @@ def fetch_wav(text,cloud_voice,key,direction=DIRECTION,spoken=None):
         return data
 
 
-def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoken=None):
+def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoken=None,max_daily_credits=None):
     if spoken is None:
         spoken = spoken_text(text, catalog.root)
     key=recipe(text,cloud_voice,direction,spoken=spoken)
@@ -213,6 +213,8 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoke
                 return path,True
             raise ValueError('同一云端请求已有记录，请核对云端历史后处理，已避免重复扣额')
         limit=int(catalog.meta('breeze_daily_credits','0'))*10
+        if max_daily_credits is not None:
+            limit = min(limit, max_daily_credits * 10)
         today=date.today().isoformat()
         spent=db.execute('SELECT COALESCE(SUM(units),0) FROM breeze_calls WHERE day=?',(today,)).fetchone()[0]
         # Reserve the documented maximum weight (2 units) for each character.
@@ -225,7 +227,7 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoke
             raise ValueError('台词超出云端单次长度')
         secret=api_key()
         if not secret:
-            raise ValueError('请在鸣潮设置中填写 BreezeBlue API Key')
+            raise ValueError('请在每日计划的「配音与预算」中填写 BreezeBlue API Key')
         db.execute("INSERT INTO breeze_calls VALUES(?,?,?,'submitted',NULL)",(key,today,units))
         db.commit()
     except BaseException:

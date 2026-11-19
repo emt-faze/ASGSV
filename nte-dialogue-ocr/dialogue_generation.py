@@ -466,9 +466,12 @@ def upgrade_export_edges(project, row, *, stop=None, lock=None):
 
 class BatchGenerator:
     def __init__(self, project, options, callback=lambda event: None, *, runtime_factory=None):
-        from dialogue_dubbing import VoiceRuntime, voice_paths
+        from dialogue_dubbing import VoiceRuntime, voice_code_path, voice_paths
         if runtime_factory is None:
-            voice_paths(options)
+            if project.game_id == "wuwa":
+                voice_code_path(options)
+            else:
+                voice_paths(options)
         self.project = project
         if options.get('game_id', 'nte') != project.game_id:
             raise ValueError('项目与生成器游戏不一致')

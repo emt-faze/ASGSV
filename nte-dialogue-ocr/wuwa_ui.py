@@ -59,32 +59,8 @@ class SettingsDialog(W.QDialog):
             self.settings_tabs.addTab(page, title)
             return form
 
-        voice_form = form_page('配音与预算')
         game_form = form_page('游戏与角色')
         keys_form = form_page('播放快捷键')
-        self.branch_rule = W.QCheckBox('普通支线按无原声处理')
-        self.branch_rule.setChecked(self.catalog.branch_rule_enabled())
-        self.branch_rule.setToolTip('仅用于实时配音。已知原声、伴星任务和活动任务仍按逐句记录判断。')
-        voice_form.addRow('实时配音', self.branch_rule)
-        import wuwa_breeze as breeze
-        self.cloud_only = W.QCheckBox('默认使用 BreezeBlue，已指定原声参考的角色在本地合成')
-        self.cloud_only.setChecked(parent.catalog.cloud_only())
-        voice_form.addRow('合成方式', self.cloud_only)
-        self.cloud_budget = W.QSpinBox()
-        self.cloud_budget.setRange(0,100000)
-        self.cloud_budget.setValue(int(parent.catalog.meta('breeze_daily_credits','0')))
-        self.cloud_budget.setSpecialValueText('暂停云端付费生成')
-        self.cloud_budget.setSuffix(' 积分 / 天')
-        self.cloud_budget.setToolTip('先复用缓存。达到本工具的预算后暂停新的云端请求。')
-        voice_form.addRow('BreezeBlue 每日预算', self.cloud_budget)
-        self.cloud_key = W.QLineEdit()
-        self.cloud_key.setEchoMode(W.QLineEdit.Password)
-        try:
-            key_hint = '已配置，留空保留' if breeze.api_key() else 'API Key，保存到 Windows 凭据管理器'
-        except ValueError as exc:
-            key_hint = str(exc)
-        self.cloud_key.setPlaceholderText(key_hint)
-        voice_form.addRow('BreezeBlue 密钥', self.cloud_key)
         self.install = W.QLineEdit(self.config['install_root'])
         self.nickname = W.QLineEdit(self.config.get('nickname', '漂泊者'))
         self.gender = W.QComboBox()
@@ -96,10 +72,22 @@ class SettingsDialog(W.QDialog):
         for key, (label, *_) in PRESETS.items():
             self.narrator.addItem(label, 'system:' + key)
         self.narrator.setCurrentIndex(max(0, self.narrator.findData(self.config.get('narrator_voice'))))
-        for title, widget in (('游戏目录', self.install), ('昵称', self.nickname), ('漂泊者', self.gender), ('默认旁白', self.narrator)):
+        for title, widget in (('昵称', self.nickname), ('漂泊者', self.gender), ('默认旁白', self.narrator)):
             game_form.addRow(title, widget)
+        path_row=W.QHBoxLayout()
+        path_row.addWidget(self.install,1)
+        self.browse=W.QPushButton('手动选择')
+        self.browse.clicked.connect(self.choose_install)
+        path_row.addWidget(self.browse)
+        game_form.insertRow(0,'游戏目录',path_row)
+        self.probe_note=W.QLabel()
+        self.probe_note.setWordWrap(True)
+        game_form.addRow('探测状态',self.probe_note)
+        self.probe=W.QPushButton('本机资源探测')
+        self.probe.clicked.connect(parent.start_probe)
         data_actions = W.QHBoxLayout()
-        for label, action in (('更新台词索引', parent.start_import), ('本机资源探测', parent.start_probe),
+        data_actions.addWidget(self.probe)
+        for label, action in (('更新台词索引', parent.start_import),
                               ('导入采集', parent.import_capture)):
             button = W.QPushButton(label)
             button.clicked.connect(action)
@@ -149,6 +137,11 @@ class SettingsDialog(W.QDialog):
         buttons.button(W.QDialogButtonBox.Cancel).setText('取消')
         layout.addWidget(buttons)
 
+    def choose_install(self):
+        folder=W.QFileDialog.getExistingDirectory(self,'选择鸣潮安装目录',self.install.text())
+        if folder:
+            self.install.setText(folder)
+
     def add_term(self, term, replacement):
         row = self.terms.rowCount()
         self.terms.insertRow(row)
@@ -164,7 +157,7 @@ class SettingsDialog(W.QDialog):
     def accept(self):
         keys = {key: widget.currentText() for key, widget in self.keys.items()}
         if len(set(keys.values())) != len(keys) or not self.nickname.text().strip():
-            self.settings_tabs.setCurrentIndex(1 if not self.nickname.text().strip() else 2)
+            self.settings_tabs.setCurrentIndex(0 if not self.nickname.text().strip() else 1)
             W.QMessageBox.warning(self, '设置未保存', '昵称不能为空，快捷键不可重复。')
             return
         terms = {}
@@ -178,12 +171,6 @@ class SettingsDialog(W.QDialog):
             terms[term] = replacement
         try:
             inventory(self.install.text().strip(), self.root)
-            if self.cloud_key.text().strip():
-                from wuwa_breeze import save_key
-                save_key(self.cloud_key.text())
-            if self.cloud_only.isChecked() and not self.catalog.db.execute('SELECT 1 FROM breeze_presets LIMIT 1').fetchone():
-                from wuwa_breeze import refresh_presets
-                refresh_presets(self.catalog)
         except Exception as exc:
             W.QMessageBox.warning(self, '设置未保存', str(exc))
             return
@@ -193,12 +180,6 @@ class SettingsDialog(W.QDialog):
         atomic_text(self.root / 'config.json', json.dumps(self.config, ensure_ascii=False, indent=2))
         catalog = Catalog(self.root)
         try:
-            with catalog.db:
-                catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',
-                                   ('breeze_daily_credits',str(self.cloud_budget.value())))
-                catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',
-                                   ('wuwa_tts_provider','breezeblue' if self.cloud_only.isChecked() else 'hybrid'))
-            catalog.set_branch_rule(self.branch_rule.isChecked())
             if catalog.cloud_only():
                 traveler_profile = '漂泊者（女）' if self.gender.currentData()=='female' else '漂泊者（男）'
                 with catalog.db:
@@ -229,6 +210,9 @@ class VoiceBindingDialog(W.QDialog):
         self.setWindowTitle('角色声线 · ' + row['speaker'])
         self.resize(700, 510)
         layout = W.QVBoxLayout(self)
+        self.voice_search=W.QLineEdit()
+        self.voice_search.setPlaceholderText('搜索声线、角色或关键词')
+        layout.addWidget(self.voice_search)
         self.voices = W.QComboBox()
         from system_voices import PRESETS
         for key, (label, *_) in PRESETS.items():
@@ -245,6 +229,16 @@ class VoiceBindingDialog(W.QDialog):
         for label, voice, profile in choices(catalog.root, speaker_id=row['speaker_id']):
             self.voices.addItem(label, voice)
             self.profiles[voice] = profile.to_dict()
+        def filter_voices(text):
+            matches=[]
+            for i in range(self.voices.count()):
+                hit=text.strip().casefold() in (self.voices.itemText(i)+' '+str(self.voices.itemData(i))).casefold()
+                self.voices.view().setRowHidden(i,not hit)
+                if hit:
+                    matches.append(i)
+            if self.voices.currentIndex() not in matches:
+                self.voices.setCurrentIndex(matches[0] if matches else -1)
+        self.voice_search.textChanged.connect(filter_voices)
         self.adapt = W.QCheckBox('创建 NPC 改编声线')
         self.pitch = W.QDoubleSpinBox()
         self.pitch.setRange(-2, 2)
@@ -440,7 +434,7 @@ class GameHome(W.QDialog):
         for title, icon, tip, slot in (
             ('打开项目', 'folder', '选择并打开已有配音项目', self.open_existing),
             ('继续上次项目', 'history', '继续上次打开的配音项目', self.resume_project),
-            ('设置', 'settings', '打开鸣潮设置，调整配音、预算和快捷键', self.open_settings),
+            ('设置', 'settings', '打开鸣潮设置，调整游戏目录、角色和快捷键', self.open_settings),
         ):
             button = W.QToolButton()
             button.setObjectName('headerTool')
@@ -569,7 +563,7 @@ class GameHome(W.QDialog):
             footer_target.addWidget(self.live.footer)
         self.wuwa.setVisible(wuwa)
         self.nte.setVisible(not wuwa)
-        self.settings.setToolTip('打开鸣潮设置，调整配音、预算和快捷键' if wuwa else '打开异环连接与字幕校准')
+        self.settings.setToolTip('打开鸣潮设置，调整游戏目录、角色和快捷键' if wuwa else '打开异环连接与字幕校准')
         self.settings.setEnabled(True)
         self.live.start.setVisible(wuwa)
         self.advanced_toggle.setVisible(not wuwa)
@@ -614,7 +608,7 @@ class GameHome(W.QDialog):
         page = self.workspace_tabs.currentWidget()
         for name, widget in self.pages.items():
             if widget is page:
-                if page is self.settings_page and self.settings_editor and self.settings_editor.settings_tabs.currentIndex() == 2:
+                if page is self.settings_page and self.settings_editor and self.settings_editor.settings_tabs.currentIndex() == 1:
                     name = '快捷键'
                 self.sidebar.buttons[name].setChecked(True)
                 break
@@ -638,7 +632,7 @@ class GameHome(W.QDialog):
                 self.settings_editor = editor
                 editor.finished.connect(self.finish_settings)
                 editor.settings_tabs.currentChanged.connect(self.update_footer)
-            self.settings_editor.settings_tabs.setCurrentIndex(2 if name == '快捷键' else 0)
+            self.settings_editor.settings_tabs.setCurrentIndex(1 if name == '快捷键' else 0)
             self.workspace_tabs.setCurrentWidget(self.settings_page)
         else:
             if name == '角色音色':
@@ -660,35 +654,24 @@ class GameHome(W.QDialog):
         self.navigate('设置')
 
     def refresh_all(self):
-        _, data = voice_paths(self.config()['dubbing'])
-        self.catalog.sync_voices(data)
+        if not self.catalog.cloud_only():
+            _, data = voice_paths(self.config()['dubbing'])
+            self.catalog.sync_voices(data)
         self.task_library.reload()
 
     def generate_quest(self, scope, ids):
+        if self.worker and self.worker.isRunning():
+            self.task_library.set_work_status('已有后台任务正在运行，请在完成后重试')
+            return
         self.generating_scope = scope
-        self.start_job(lambda stop, progress: generate_missing(self.root, scope, ids, stop, progress))
+        self.task_library.set_work_status('正在核对已有录音、声线和当日预算…')
+        self.start_job(lambda stop, progress: generate_missing(self.root, scope, ids, stop, progress,self.task_library.line_ready.emit))
 
     def edit_voice(self, row):
         if self.catalog.cloud_only():
-            voices = self.catalog.db.execute('SELECT id,name FROM breeze_presets ORDER BY name,id').fetchall()
-            labels = [v['name']+' · '+v['id'] for v in voices]
-            if not labels:
-                self.status.setText('请在鸣潮设置保存云端配置，同步中文音色库')
-                return
-            binding = self.catalog.binding(row['speaker_id'])
-            index = next((i for i,v in enumerate(voices) if binding and binding['voice']=='breeze:'+v['id']),0)
-            choice, ok = W.QInputDialog.getItem(self, 'BreezeBlue · '+row['speaker'], '中文音色', labels, index, True)
-            if ok and choice in labels:
-                from quest_library import choose_cloud_voice
-                try:
-                    choose_cloud_voice(self.catalog, row['speaker_id'], voices[labels.index(choice)]['id'])
-                except ValueError as exc:
-                    self.status.setText(str(exc))
-                    return
-            elif ok:
-                self.status.setText('请从中文音色列表中选择一项')
-                return
-            else:
+            from wuwa_voice_select import CloudVoiceDialog
+            dialog=CloudVoiceDialog(self.catalog,row,self)
+            if dialog.exec()!=W.QDialog.Accepted:
                 return
         else:
             VoiceBindingDialog(self.catalog, row, self.config(), self).exec()
@@ -767,13 +750,20 @@ class GameHome(W.QDialog):
 
     def start_job(self, fn):
         if self.worker and self.worker.isRunning():
+            self.status.setText('已有后台任务正在运行')
             return
         self.live.launch_busy = True
         self.live.update_launch_button()
         self.worker = Job(fn, self)
-        self.worker.message.connect(self.status.setText)
-        self.worker.error.connect(lambda text: self.status.setText('未完成：' + text))
-        self.worker.result.connect(lambda result: self.status.setText('完成：' + str(result)))
+        def report(text):
+            self.status.setText(text)
+            if getattr(self,'generating_scope',None):
+                self.task_library.set_work_status(text)
+            if getattr(self,'probing',False) and self.settings_editor:
+                self.settings_editor.probe_note.setText(text)
+        self.worker.message.connect(report)
+        self.worker.error.connect(lambda text: report('未完成 · '+text))
+        self.worker.result.connect(lambda result: report(str(result)))
         self.worker.finished.connect(self.job_finished)
         self.game.setEnabled(False)
         self.settings.setEnabled(False)
@@ -794,8 +784,38 @@ class GameHome(W.QDialog):
         self.start_job(work)
 
     def start_probe(self):
-        root, install = self.root, self.config()['install_root']
-        self.start_job(lambda stop, progress: probe_local(root, install, progress)['parser_status'])
+        from wuwa_game_discovery import detect_install
+        if self.worker and self.worker.isRunning():
+            self.status.setText('请等待当前后台任务结束')
+            return
+        self.probing=True
+        editor=self.settings_editor
+        preferred=editor.install.text().strip() if editor else self.config().get('install_root','')
+        if editor:
+            editor.probe.setEnabled(False)
+            editor.probe_note.setText('正在探测本机游戏位置…')
+        def work(stop,progress):
+            path,source,details=detect_install(preferred,stop,progress)
+            inventory(path,self.root)
+            return path,source,details
+        def found(result):
+            path,source,details=result
+            cfg=self.config()
+            cfg['install_root']=path
+            try:
+                atomic_text(self.root/'config.json',json.dumps(cfg,ensure_ascii=False,indent=2))
+            except OSError as exc:
+                msg='目录已识别，保存失败 · '+str(exc)
+            else:
+                msg=f'已锁定 {path} · {source} · 已校验 {details}'
+                if self.settings_editor:
+                    self.settings_editor.install.setText(path)
+                    self.settings_editor.config['install_root']=path
+            self.status.setText(msg)
+            if self.settings_editor:
+                self.settings_editor.probe_note.setText(msg)
+        self.start_job(work)
+        self.worker.result.connect(found)
 
     def launch_game(self):
         from wuwa_launch import launch_and_monitor
@@ -811,6 +831,10 @@ class GameHome(W.QDialog):
             self.status.setText('正在停止…')
 
     def job_finished(self):
+        if getattr(self,"probing",False):
+            self.probing=False
+            if self.settings_editor:
+                self.settings_editor.probe.setEnabled(True)
         self.live.launch_busy = False
         self.live.update_launch_button()
         self.game.setEnabled(True)

@@ -212,7 +212,8 @@ class Catalog:
         for q in read('quests'):
             data = q['Data']
             qid = str(q['QuestId'])
-            quest_info[qid] = (texts.get(data.get('TidName', ''), '') or qid, str(data.get('RegionId', '')))
+            from wuwa_quest_names import title
+            quest_info[qid] = (title(qid,texts.get(data.get('TidName', '')),data.get('Key')), str(data.get('RegionId', '')))
         quest_states = {}
         for node in read('quest_nodes'):
             qid = str(node['Key']).split('_')[0]
