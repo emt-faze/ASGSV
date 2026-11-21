@@ -5,14 +5,23 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+from uuid import uuid4
 
 from dialogue_generation import atomic_text, timestamp
 
 PROGRESS_LABELS = {'completed': '已完成（有记录）', 'pending': '人工确认未完成', 'unknown': '进度未知'}
 
 
+def cache_path(install_root):
+    return Path(install_root).resolve() / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db'
+
+
+def account_key(identity):
+    return hashlib.sha256(('wuwa-local-account:' + identity).encode()).hexdigest()
+
+
 def read_finished_quests(install_root):
-    path = Path(install_root).resolve() / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db'
+    path = cache_path(install_root)
     if not path.is_file():
         raise ValueError('未找到本机任务缓存；未将任何任务判为未完成')
     connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
@@ -27,6 +36,7 @@ def read_finished_quests(install_root):
     if not isinstance(value, dict) or value.get('___MetaType___') != '___Map___' or not isinstance(value.get('Content'), list):
         raise ValueError('任务缓存 Map 格式不受支持')
     profiles = {}
+    labels = {}
     for pair in value['Content']:
         if not isinstance(pair, list) or len(pair) != 2:
             raise ValueError('任务缓存账号条目格式不受支持')
@@ -39,11 +49,13 @@ def read_finished_quests(install_root):
         if any(type(q) is not int or q <= 0 for q in ids):
             raise ValueError('任务 ID 格式不受支持')
         # Keep the game-specific cache identity opaque; never log raw account IDs.
-        account = hashlib.sha256(('wuwa-local-account:' + identity).encode()).hexdigest()
+        account = account_key(identity)
         if account in profiles:
             raise ValueError('任务缓存出现重复账号')
         profiles[account] = {str(q) for q in ids}
-    return dict(profiles=profiles, path=str(path), sha256=hashlib.sha256(row[0].encode()).hexdigest())
+        labels[account] = ('UID 尾号 ' + identity[-4:] if identity.isdecimal() and len(identity)>4
+                           else '游戏账号') + ' · ' + account[:6].upper()
+    return dict(profiles=profiles, labels=labels, path=str(path), sha256=hashlib.sha256(row[0].encode()).hexdigest())
 
 
 class QuestProgress:
@@ -63,21 +75,43 @@ class QuestProgress:
     def account(self):
         return self.catalog.meta('progress_account')
 
+    @property
+    def selection(self):
+        return tuple(self.db.execute("""SELECT
+            coalesce((SELECT value FROM meta WHERE key='progress_account'),''),
+            coalesce((SELECT value FROM meta WHERE key='account_revision'),'')""").fetchone())
+
+    def require(self, selection):
+        if self.selection != selection:
+            raise ValueError('游戏账号已切换，原账号的配音任务已停止。')
+
+    def label(self, account):
+        return self.catalog.meta('account_alias:'+account) or self.catalog.meta('account_label:'+account) or account[:6].upper()
+
+    def resolve(self, profiles, explicit=None):
+        selected = explicit or self.account
+        if not selected and len(profiles) == 1:
+            selected = next(iter(profiles))
+        if not selected:
+            raise ValueError('请在任务库或每日配音计划点击「选择游戏账号」，选择本次配音使用的账号。')
+        if selected not in profiles:
+            raise ValueError('所选账号不在本机缓存中，请登录该账号或点击「切换游戏账号」。')
+        return selected
+
     def refresh(self, install_root, account=None):
         snapshot = read_finished_quests(install_root)
         profiles = snapshot.pop('profiles')
-        selected = account or self.account
-        if not selected:
-            if len(profiles) != 1:
-                raise ValueError('本地任务缓存不是单一账号，请先选择账号；没有合并进度')
-            selected = next(iter(profiles))
-        if selected not in profiles:
-            raise ValueError('已绑定账号不在本地任务缓存中，暂停更新；没有切换账号或合并进度')
+        labels = snapshot.pop('labels')
         when = timestamp()
         evidence = json.dumps(dict(snapshot, key='UserFinishedQuests', completeness='partial'), ensure_ascii=False)
-        ids = profiles[selected]
         with self.db:
-            self.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('progress_account', selected))
+            self.db.execute('BEGIN IMMEDIATE')
+            selected = self.resolve(profiles, account)
+            ids = profiles[selected]
+            if selected != self.account:
+                self.db.executemany('INSERT OR REPLACE INTO meta VALUES(?,?)', (
+                    ('progress_account', selected), ('account_revision', uuid4().hex)))
+            self.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('account_label:'+selected, labels[selected]))
             for qid in ids:
                 previous = self.db.execute('SELECT status,source FROM quest_progress WHERE account=? AND quest_id=?',
                                            (selected, qid)).fetchone()
@@ -96,9 +130,9 @@ class QuestProgress:
         atomic_text(self.catalog.root / 'reports/quest-progress.json', json.dumps(report, ensure_ascii=False, indent=2))
         return report
 
-    def states(self):
+    def states(self, account=None):
         return {r['quest_id']: r['status'] for r in self.db.execute(
-            'SELECT quest_id,status FROM quest_progress WHERE account=?', (self.account,))}
+            'SELECT quest_id,status FROM quest_progress WHERE account=?', (account or self.account,))}
 
     def review(self, scope_ids, status, basis):
         if not self.account:

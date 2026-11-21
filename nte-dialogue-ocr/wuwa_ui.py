@@ -12,7 +12,7 @@ from dialogue_generation import atomic_text
 from dialogue_dubbing import voice_paths
 from game_profiles import CODE_ROOT, WUWA_ROOT, initialize_wuwa
 from wuwa_catalog import Catalog
-from wuwa_resources import download_tables, inventory, probe_local
+from wuwa_resources import inventory, probe_local
 from quest_library import QuestLibrary, generate_missing
 from wuwa_surface import AccentButton, GameSelector
 from generator_ui_support import studio_font
@@ -696,7 +696,10 @@ class GameHome(W.QDialog):
             return
         self.generating_scope = scope
         self.task_library.set_work_status('正在核对已有录音、声线和当日预算…')
-        self.start_job(lambda stop, progress: generate_missing(self.root, scope, ids, stop, progress,self.task_library.line_ready.emit))
+        selection = self.catalog.progress.selection
+        discovered_only = self.task_library.discovered_only.isChecked()
+        self.start_job(lambda stop, progress: generate_missing(self.root, scope, ids, stop, progress,
+            self.task_library.line_ready.emit, selection=selection, discovered_only=discovered_only))
 
     def edit_voice(self, row):
         if self.catalog.cloud_only():
@@ -804,18 +807,8 @@ class GameHome(W.QDialog):
         self.worker.start()
 
     def start_import(self):
-        if self.catalog.meta('index_folder'):
-            self.open_update_center()
-            return
-        root = self.root
-        def work(stop, progress):
-            folder = download_tables(root, stop, progress)
-            catalog = Catalog(root)
-            try:
-                return catalog.import_public(folder, stop, progress)
-            finally:
-                catalog.close()
-        self.start_job(work)
+        from wuwa_update import update_index
+        self.start_job(lambda stop, progress: update_index(CODE_ROOT.parent, self.root, stop, progress))
 
     def start_probe(self):
         from wuwa_game_discovery import detect_install

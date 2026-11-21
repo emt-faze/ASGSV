@@ -34,7 +34,7 @@ class BudgetPane(W.QWidget):
         self.ordinary=W.QCheckBox('启用普通支线无原声规则')
         self.ordinary.setChecked(c.branch_rule_enabled())
         self.budget=W.QSpinBox()
-        self.budget.setRange(0,100000)
+        self.budget.setRange(0,400)
         self.budget.setSuffix(' 积分')
         self.budget.setValue(int(c.meta('breeze_daily_credits','0')))
         self.key=W.QLineEdit()
@@ -53,7 +53,7 @@ class BudgetPane(W.QWidget):
     def update_usage(self,c):
         units=today_units(c)
         cap=int(c.meta('breeze_daily_credits','0'))
-        self.usage.setText(f'已预留 {units/10:g} 积分　·　每日计划上限 {min(cap,400)} 积分')
+        self.usage.setText(f'所有游戏账号今日共预留 {units/10:g} / {min(cap,400)} 积分')
         self.meter.setRange(0,max(1,min(cap,400)*10))
         self.meter.setValue(min(units,self.meter.maximum()))
 

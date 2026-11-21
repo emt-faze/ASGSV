@@ -465,7 +465,7 @@ def upgrade_export_edges(project, row, *, stop=None, lock=None):
 
 
 class BatchGenerator:
-    def __init__(self, project, options, callback=lambda event: None, *, runtime_factory=None):
+    def __init__(self, project, options, callback=lambda event: None, *, runtime_factory=None, check_selection=None):
         from dialogue_dubbing import VoiceRuntime, voice_code_path, voice_paths
         if runtime_factory is None:
             if project.game_id == "wuwa":
@@ -477,6 +477,7 @@ class BatchGenerator:
             raise ValueError('项目与生成器游戏不一致')
         self.options = dict(options, mode=project.mode, fallback_to_system=False)
         self.callback, self.runtime_factory = callback, runtime_factory or VoiceRuntime
+        self.check_selection = check_selection
         self.stop_event, self.finished = threading.Event(), threading.Event()
         self.lock = threading.RLock()
         self.runtime = None
@@ -498,6 +499,8 @@ class BatchGenerator:
                     pass
 
     def run(self, ids=None, *, force=False):
+        if self.check_selection:
+            self.check_selection()
         if self.project.game_id == 'wuwa':
             from wuwa_catalog import Catalog
             from wuwa_resources import inventory
@@ -539,10 +542,16 @@ class BatchGenerator:
             from wuwa_log_generation import export_cloud, export_original_reference
             catalog = Catalog(root)
             try:
+                def current():
+                    if self.check_selection:
+                        self.check_selection()
+                    return not self.stop_event.is_set() and catalog.cloud_only()
                 for row in rows:
                     if self.stop_event.is_set():
                         break
                     try:
+                        if self.check_selection:
+                            self.check_selection()
                         assigned=catalog.binding(row.evidence['speaker_id'])
                         if assigned and assigned['voice'].startswith('character:'):
                             row.voice=assigned['voice']
@@ -559,7 +568,7 @@ class BatchGenerator:
                             raise ValueError('请选择可用的 BreezeBlue 中文音色')
                         self.emit('BreezeBlue 正在生成 · '+row.speaker,row_id=row.id)
                         export_cloud(catalog,self.project,row,preset,
-                                     lambda: not self.stop_event.is_set() and catalog.cloud_only(),self.stop_event,self.lock)
+                                     current,self.stop_event,self.lock)
                         summary['completed'] += 1
                         summary['cached'] += int(row.audio['cache_hit'])
                     except Exception as exc:
@@ -600,6 +609,8 @@ class BatchGenerator:
             output = self.project.directory / "audio"
             output.mkdir(parents=True, exist_ok=True)
             for number, row in enumerate(rows, 1):
+                if self.check_selection:
+                    self.check_selection()
                 if self.stop_event.is_set():
                     break
                 temp = output / f".{row.id}.{uuid4().hex}.tmp.wav"

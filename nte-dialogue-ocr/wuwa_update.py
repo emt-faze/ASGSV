@@ -12,7 +12,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.request import Request, urlopen
+from http.client import IncompleteRead
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from uuid import uuid4
 import wave
 from zipfile import ZipFile
@@ -20,6 +23,11 @@ from zipfile import ZipFile
 PUBLIC_KEY = '97753d092ff8c22f13f7f853e4880ce5452324b3b5629246b578c1e5239f68e0'
 RELEASES = 'https://github.com/emt-faze/ASGSV/releases/'
 FEED = RELEASES + 'latest/download/wuwa-updates.json'
+DEFAULT_SOURCE = 'cnb'
+SOURCES = {'cnb':'CNB 国内源', 'github':'GitHub 官方源'}
+# Portable builds bind this value to the publisher's public CNB repository.
+CNB_REPOSITORY = 'asgsv-studio/ASGSV'
+SOURCE_FILE = '.asgsv-update/source.txt'
 HASH = re.compile(r'[a-f0-9]{64}')
 TABLES = {'flow','states','text','speakers','speaker_text','quests','quest_nodes','audio'}
 MANIFEST = 'FILE_MANIFEST.json'
@@ -112,10 +120,68 @@ def locked(path,timeout=0):
         lock.unlock()
 
 
-def read_feed():
-    req=Request(FEED, headers={'User-Agent':'ASGSV-WuWa-Updater','Cache-Control':'no-cache'})
-    with urlopen(req,timeout=20) as stream:
-        body=signed_body(stream.read(1024*1024))
+def selected_source(root):
+    path = Path(root)/SOURCE_FILE
+    try:
+        name = path.read_text(encoding='utf8').strip()
+    except FileNotFoundError:
+        return DEFAULT_SOURCE
+    return name if name in SOURCES else DEFAULT_SOURCE
+
+
+def save_source(root, name):
+    if name not in SOURCES:
+        raise ValueError('未知更新源')
+    atomic(Path(root)/SOURCE_FILE, name.encode('ascii'))
+
+
+def cnb_releases(repository):
+    parts = repository.split('/')
+    if len(parts) < 2 or any(not re.fullmatch(r'[\w.-]+', p) or p in ('.', '..') for p in parts):
+        raise ValueError('此构建缺少有效的 CNB 发布仓库。请导入网盘签名更新包或切换更新源。')
+    from urllib.parse import quote
+    return 'https://cnb.cool/' + quote(repository) + '/-/releases/'
+
+
+class CnbRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        dst = urlsplit(newurl)
+        if dst.scheme != 'https' or dst.netloc not in ('cnb.cool', 'asset.cnb.cool'):
+            raise ValueError('CNB 附件跳转到了未识别的站点。请使用网盘签名更新包。')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def release_page(source, tag):
+    if source == 'cnb':
+        return cnb_releases(CNB_REPOSITORY) + 'tag/' + tag
+    if source == 'github':
+        return RELEASES + 'tag/' + tag
+    raise ValueError('未知更新源')
+
+
+def open_asset(source, filename, *, tag=None, headers=None, timeout):
+    headers={'User-Agent':'ASGSV-WuWa-Updater', **(headers or {})}
+    if source == 'cnb':
+        # The public latest/download route works anonymously. The release API can require login.
+        path = ('download/' + tag + '/') if tag else 'latest/download/'
+        url = cnb_releases(CNB_REPOSITORY) + path + filename
+        return build_opener(CnbRedirect()).open(Request(url, headers=headers), timeout=timeout)
+    if source == 'github':
+        url = RELEASES+'download/'+tag+'/'+filename if tag else FEED
+        return urlopen(Request(url,headers=headers),timeout=timeout)
+    raise ValueError('未知更新源')
+
+
+def read_feed(source=DEFAULT_SOURCE):
+    for attempt in range(2):
+        try:
+            with open_asset(source,'wuwa-updates.json',headers={'Cache-Control':'no-cache'},timeout=12) as stream:
+                body=signed_body(stream.read(1024*1024))
+            break
+        except (OSError,IncompleteRead) as exc:
+            if attempt or isinstance(exc,(FileNotFoundError,PermissionError)) or (isinstance(exc,HTTPError) and exc.code not in (408,502,503,504)):
+                raise
+            time.sleep(.35)
     if not re.fullmatch(r'wuwa-v\d+\.\d+\.\d+', body['tag']):
         raise ValueError('更新渠道不匹配')
     for e in body['packages']:
@@ -125,25 +191,32 @@ def read_feed():
     return body
 
 
-def download(install,feed,e,progress):
+def program_offer(feed,version):
+    candidates=[e for e in feed['packages'] if e['kind']=='app' and e['base']==version
+                and semver(e['version'])>semver(version)]
+    return max(candidates,key=lambda e:semver(e['version']),default=None)
+
+
+def download(install,feed,e,progress,*,source=None,stop=None):
+    source=selected_source(install) if source is None else source
     directory=install/'.asgsv-update/downloads'
     directory.mkdir(parents=True,exist_ok=True)
     dest=directory/(e['sha256']+'.zip')
     if dest.is_file() and digest(dest)==e['sha256']:
         return dest
-    req = Request(RELEASES+'download/'+feed['tag']+'/'+e['asset'],headers={'User-Agent':'ASGSV-WuWa-Updater'})
     with locked(directory/(e['sha256']+'.lock')):
         temp=dest.with_suffix('.part')
         error=''
         for attempt in range(3):
             try:
+                if stop is not None and stop.is_set():
+                    raise InterruptedError('下载已取消')
                 offset=temp.stat().st_size if temp.exists() else 0
                 if offset>=e['size']:
                     temp.unlink()
                     offset=0
-                if offset:
-                    req.add_header('Range','bytes='+str(offset)+'-')
-                with urlopen(req,timeout=45) as src:
+                headers={'Range':f'bytes={offset}-'} if offset else {}
+                with open_asset(source,e['asset'],tag=feed['tag'],headers=headers,timeout=45) as src:
                     if src.status!=206:
                         offset=0
                     elif not src.headers.get('Content-Range','').startswith(f'bytes {offset}-'):
@@ -151,6 +224,8 @@ def download(install,feed,e,progress):
                     with temp.open('ab' if offset else 'wb') as dst:
                         marked=-1
                         while chunk:=src.read(256*1024):
+                            if stop is not None and stop.is_set():
+                                raise InterruptedError('下载已取消')
                             offset+=len(chunk)
                             if offset>e['size']:
                                 raise ValueError('附件超出签名清单大小')
@@ -167,6 +242,8 @@ def download(install,feed,e,progress):
                 os.replace(temp,dest)
                 return dest
             except (OSError,ValueError) as exc:
+                if isinstance(exc,(FileNotFoundError,PermissionError,InterruptedError)):
+                    raise
                 error=str(exc)
                 progress(f'第 {attempt+1} 次下载未完成 · {exc}')
     raise OSError('无法取得更新附件 · '+error)
@@ -266,9 +343,9 @@ def validate_quest(folder,m):
         raise ValueError('配音包存在未引用的文件')
 
 
-def install_content(install,archive,progress=print):
+def install_content(install,archive,progress=print,*,content_root=None,stop=None):
     from wuwa_catalog import Catalog
-    root=install/'game-data/wuwa'
+    root=install/'game-data/wuwa' if content_root is None else content_root
     store=root/'updates'
     with locked(store/'content.lock'),ZipFile(archive) as z:
         m=inspect_zip(z)
@@ -292,6 +369,8 @@ def install_content(install,archive,progress=print):
                     raise ValueError('本机资源快照受损 · '+name)
             else:
                 os.replace(stage,folder)
+        if stop is not None and stop.is_set():
+            raise InterruptedError('资源更新已取消')
         if m['kind']=='quest':
             state=quest_state(root)
             state[m['scope']]={'folder':name,'revision':m['revision']}
@@ -299,14 +378,64 @@ def install_content(install,archive,progress=print):
         else:
             c=Catalog(root)
             try:
-                c.import_public(folder,progress=progress,revision=m['revision'])
+                c.import_public(folder,stop=stop,progress=progress,revision=m['revision'])
             finally:
                 c.close()
         return f'已更新 {m["name"]} · 修订 {m["revision"]}'
 
 
+def update_index(install, content_root, stop, progress):
+    source = selected_source(install)
+    progress('正在从' + SOURCES[source] + '检查中文台词索引…')
+    feed = read_feed(source)
+    entries = [e for e in feed['packages'] if e['kind'] == 'index']
+    if not entries:
+        raise ValueError('当前发布尚未提供台词索引，可从更新中心导入网盘索引包。')
+    entry = max(entries, key=lambda e: e['revision'])
+    if semver(portable_version(install)) < semver(entry['minimum']):
+        raise ValueError('请先升级工作台至 v' + entry['minimum'] + ' 或更高版本')
+    if revision(content_root, entry) >= entry['revision']:
+        return '中文台词索引已是最新版本'
+    path = download(install, feed, entry, progress, source=source, stop=stop)
+    return install_content(install, path, progress, content_root=content_root, stop=stop)
+
+
 def portable_version(root):
     return (root/VERSION).read_text().strip()
+
+
+def update_resources(install, source, progress):
+    progress('正在检查资源版本…')
+    feed = read_feed(source)
+    version = semver(portable_version(install))
+    latest = {}
+    for entry in feed['packages']:
+        if entry['kind'] == 'app':
+            continue
+        scope = (entry['kind'], entry.get('scope', ''))
+        if scope not in latest or entry['revision'] > latest[scope]['revision']:
+            latest[scope] = entry
+    total = len(latest)
+    if not total:
+        return '此版本尚未发布资源包'
+    installed = current = 0
+    pending = []
+    for position, key in enumerate(sorted(latest), start=1):
+        entry = latest[key]
+        if revision(install / 'game-data/wuwa', entry) >= entry['revision']:
+            current += 1
+            continue
+        if version < semver(entry['minimum']):
+            pending.append(entry['name'])
+            continue
+        progress(f'正在更新 {position}/{total} · {entry["name"]}')
+        archive = download(install, feed, entry, progress, source=source)
+        install_content(install, archive, progress)
+        installed += 1
+    result = f'已更新 {installed} 项资源，已有 {current} 项是最新版本'
+    if pending:
+        result += '。升级程序后可更新 ' + '、'.join(pending)
+    return result
 
 
 def stage_program(root,archive,progress=print):
@@ -427,3 +556,13 @@ def apply_program(root,archive,progress=print):
                 raise
             (tx/'journal.json').unlink()
             return '程序升级成功 · v'+m['version']
+
+
+if __name__=='__main__' and sys.argv[1:2]==['--check-feed']:
+    try:
+        source=sys.argv[2] if len(sys.argv)>2 else selected_source(Path(__file__).resolve().parents[1])
+        payload=canonical(read_feed(source))
+    except Exception as exc:
+        print(f'{type(exc).__name__} · {exc}',file=sys.stderr)
+        raise SystemExit(1)
+    sys.stdout.buffer.write(payload)

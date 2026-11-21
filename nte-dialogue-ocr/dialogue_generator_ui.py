@@ -1236,6 +1236,10 @@ def main():
             selected_game = 'nte' if args.organize else args.game
             if selected_game and request_existing(ROOT.parent/'game-data/entry.json',selected_game,library=args.organize):
                 return 0
+            if selected_game != 'nte' and args.smoke_ms is None and not os.environ.get('ASGSV_UPDATE_HEALTH'):
+                from wuwa_startup_update import enter_workbench
+                if not enter_workbench(ROOT.parent):
+                    return 0
             window = GameHome(game_id=selected_game)
             if args.organize:
                 window.nte.workspace_tabs.setCurrentWidget(window.nte.task_library)

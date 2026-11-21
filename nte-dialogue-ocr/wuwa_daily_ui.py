@@ -9,6 +9,7 @@ from wuwa_daily_plan import record_scan
 from wuwa_plan_controls import BudgetPane, PLAN_STYLE
 from wuwa_daily_scheduler import manage
 from wuwa_claim_ui import ClaimPane
+from wuwa_account_ui import GameAccountButton
 import wuwa_breeze as breeze
 
 
@@ -39,13 +40,20 @@ class DailyDialog(W.QDialog):
         super().__init__(parent)
         self.c=c
         initialize(c)
-        self.account=c.meta('daily_account')
+        self.account=c.progress.account
+        self.shown_selection=None
         self.worker=None
         self.setWindowTitle('每日配音计划')
         self.setObjectName('dailyPlan')
         self.setStyleSheet(PLAN_STYLE)
         self.resize(830,585)
         layout=W.QVBoxLayout(self)
+        account_bar=W.QHBoxLayout()
+        self.account_button=GameAccountButton(c,self)
+        account_bar.addWidget(self.account_button)
+        account_bar.addWidget(W.QLabel('后台固定使用所选账号 · 所有游戏账号共用每日预算'))
+        account_bar.addStretch()
+        layout.addLayout(account_bar)
         self.tabs=W.QTabWidget()
         layout.addWidget(self.tabs,1)
         detect=W.QWidget()
@@ -149,6 +157,8 @@ class DailyDialog(W.QDialog):
         self.feedback.setWordWrap(True)
         self.feedback.setTextInteractionFlags(C.Qt.TextSelectableByMouse)
         layout.addWidget(self.feedback)
+        self.account_button.changed.connect(self.refresh)
+        self.account_button.problem.connect(self.failed)
         self.detect_button.clicked.connect(self.detect)
         self.index_button.clicked.connect(self.initialize_index)
         self.add.clicked.connect(lambda:self.add_selected(False))
@@ -175,6 +185,7 @@ class DailyDialog(W.QDialog):
 
     def showEvent(self,event):
         super().showEvent(event)
+        self.account_button.detect_single()
         self.poll.start()
 
     def hideEvent(self,event):
@@ -232,21 +243,35 @@ class DailyDialog(W.QDialog):
         super().done(result)
 
     def detect(self):
-        self.start(lambda c:scan(c,config(c)),self.scanned,'正在核对游戏日志、完成缓存和普通支线索引…')
+        if self.account_button.ensure():
+            selection=self.c.progress.selection
+            self.start(lambda c:scan(c,config(c)),lambda data:self.scanned(data,selection),'正在核对所选账号的游戏日志、完成缓存和普通支线索引…')
 
     def initialize_index(self):
         from wuwa_resources import download_tables
+        if not self.account_button.ensure():
+            return
+        selection=self.c.progress.selection
         def index_then_scan(c):
             cfg=config(c)
             c.import_public(download_tables(c.root, progress=lambda msg:None))
             return scan(c,cfg)
-        self.start(index_then_scan,self.scanned,'正在下载并校验台词索引，首次准备可能需要几分钟…')
+        self.start(index_then_scan,lambda data:self.scanned(data,selection),'正在下载并校验台词索引，首次准备可能需要几分钟…')
 
-    def scanned(self,data):
-        self.account,items=data
+    def scanned(self,data,selection):
+        account,items=data
+        try:
+            record_scan(self.c,account,items,selection)
+        except ValueError as exc:
+            self.failed(str(exc))
+            return
         self.index_button.hide()
-        record_scan(self.c,self.account,items)
         self.scan_changed.emit()
+        self.show_results(items)
+        self.feedback.clear()
+        self.refresh()
+
+    def show_results(self,items):
         self.results.setRowCount(0)
         added={r[0] for r in self.c.db.execute('SELECT scope FROM daily_plan WHERE account=?',(self.account,))}
         for scope,name,evidence in items:
@@ -262,11 +287,10 @@ class DailyDialog(W.QDialog):
             self.results.setItem(i,1,W.QTableWidgetItem(evidence))
         self.scan_note.setText(f'检测到 {len(items)} 个有未完成证据、可匹配台词的普通支线。勾选后加入计划。'
             if items else '本次没有找到符合条件的支线。可进入游戏打开任务列表、追踪支线，再次扫描。')
-        self.feedback.clear()
-        self.refresh()
 
     def selection(self):
         busy=bool(self.worker)
+        self.account_button.setEnabled(not busy)
         self.claim_pane.refresh(busy)
         self.disable_ai.setEnabled(not busy and self.c.meta('daily_cast_enabled')=='1')
         for b in (self.detect_button,self.index_button,self.enable,self.disable,self.save_ai,self.verify,self.budget_pane.save):
@@ -284,7 +308,12 @@ class DailyDialog(W.QDialog):
         chosen=[self.results.item(i,0) for i in range(self.results.rowCount())
                 if self.results.item(i,0).flags() & C.Qt.ItemIsEnabled and
                 (all_rows or self.results.item(i,0).checkState()==C.Qt.Checked)]
-        added=enqueue(self.c,self.account,[(e.data(C.Qt.UserRole),e.text()) for e in chosen])
+        try:
+            added=enqueue(self.c,self.account,[(e.data(C.Qt.UserRole),e.text()) for e in chosen])
+        except ValueError as exc:
+            self.failed(str(exc))
+            self.refresh()
+            return
         for e in chosen:
             e.setCheckState(C.Qt.Unchecked)
             e.setFlags(e.flags() & ~C.Qt.ItemIsEnabled)
@@ -297,6 +326,11 @@ class DailyDialog(W.QDialog):
     def remove_selected(self):
         scopes=[self.queue.item(idx.row(),0).data(C.Qt.UserRole) for idx in self.queue.selectionModel().selectedRows()]
         with self.c.db:
+            self.c.db.execute('BEGIN IMMEDIATE')
+            if self.account!=self.c.progress.account:
+                self.failed('游戏账号已切换，请重新选择任务。')
+                self.refresh()
+                return
             self.c.db.executemany('DELETE FROM daily_plan WHERE account=? AND scope=?',[(self.account,s) for s in scopes])
         for i in range(self.results.rowCount()):
             e=self.results.item(i,0)
@@ -307,6 +341,16 @@ class DailyDialog(W.QDialog):
         self.refresh()
 
     def refresh(self):
+        selection=self.c.progress.selection
+        self.account_button.sync()
+        if self.shown_selection!=selection:
+            self.shown_selection=selection
+            self.account=selection[0]
+            self.shown=None
+            items=list(self.c.db.execute('SELECT scope,name,evidence FROM daily_discovered WHERE account=? ORDER BY name',(self.account,)))
+            self.show_results(items)
+            if not items:
+                self.scan_note.setText('请为所选账号扫描支线。' if self.account else '先选择游戏账号，再扫描该账号的支线。')
         self.cast_state.setText('已启用 · 每次配音前自动预选' if self.c.meta('daily_cast_enabled')=='1' else '未启用 · 填好配置后点击保存')
         self.budget_pane.update_usage(self.c)
         choices=[tuple(r) for r in self.c.db.execute('''SELECT
@@ -334,7 +378,8 @@ class DailyDialog(W.QDialog):
                 detail.setToolTip(status)
                 self.queue.setItem(i,1,detail)
         cap=min(400,int(self.c.meta('breeze_daily_credits','0')))
-        last=self.c.meta('daily_result','尚未执行')
+        legacy=self.c.meta('daily_result','尚未执行') if self.c.meta('daily_account')==self.account else '尚未执行'
+        last=self.c.meta('daily_result:'+self.account,legacy)
         self.balance.setText(f'今日共预留 {today_units(self.c)/10:g} / {cap} 积分　·　{last}')
         self.selection()
 
@@ -363,7 +408,11 @@ class DailyDialog(W.QDialog):
         # The standalone process can continue even if the user closes this dialog.
         from wuwa_daily_scheduler import python_path
         from pathlib import Path
-        args=['-X','utf8',str(Path(__file__).with_name('wuwa_daily_plan.py')),'--root',str(self.c.root)]
+        if self.shown_selection!=self.c.progress.selection or not self.account_button.ensure():
+            self.refresh()
+            return
+        args=['-X','utf8',str(Path(__file__).with_name('wuwa_daily_plan.py')),'--root',str(self.c.root),
+              '--selection',*self.shown_selection]
         ok,_=C.QProcess.startDetached(str(python_path()),args,str(Path(__file__).parent))
         self.feedback.setText('已启动后台执行，可关闭工作台。' if ok else '启动失败，请检查便携运行环境。')
 

@@ -1,13 +1,12 @@
 """Read quest-level evidence and match it to the installed dialogue index."""
 import gzip
-import hashlib
 import json
 import re
 from pathlib import Path
 from functools import lru_cache
 
 from wuwa_log_stream import TABLE, format_of
-from wuwa_progress import read_finished_quests
+from wuwa_progress import account_key, read_finished_quests
 from wuwa_voice_pack import mount_signature
 
 MANIFEST = Path(__file__).parent / 'assets/daily-quest-fingerprints.json.gz'
@@ -46,26 +45,34 @@ def log_events(path):
                     yield line.decode('utf8', 'replace')
 
 
-def reduce_events(lines, active, excluded, session=None):
+def reduce_events(lines, active, excluded, session=None, *, target=None):
+    """Each file needs an identified session before it can supply multi-account evidence."""
+    owner = None
+    login_uid = None
     for line in lines:
         if session is not None and '[Login]' in line and '[uId: ' in line:
             uid = re.search(r'\[uId: (\d+)\]',line)
             if uid:
-                key = hashlib.sha256(('wuwa-local-account:'+uid[1]).encode()).hexdigest()
-                if key != session.get('account'):
-                    active.clear()
-                    excluded.clear()
-                session['account'] = key
+                owner = login_uid = account_key(uid[1])
             continue
         if '[Login]' in line and 'LoginProcedure-LoginRequest-登录成功' in line:
-            active.clear()
-            excluded.clear()
+            owner, login_uid = login_uid, None
+            if target is None or owner == target:
+                active.clear()
+                excluded.clear()
+                if session is not None:
+                    session['seen'] = True
             continue
         if '[Quest]' not in line:
+            continue
+        if target is not None and owner != target:
             continue
         field = QUEST_ID.search(line)
         if not field:
             continue
+        login_uid = None
+        if session is not None:
+            session['seen'] = True
         key = field[1]
         state = STATE.search(line) if ' 任务状态更新 ' in line else None
         if state and state[1] in ('Finish', 'Delete'):
@@ -82,6 +89,12 @@ def reduce_events(lines, active, excluded, session=None):
 def scan(catalog, config):
     install = Path(config['install_root'])
     profiles = read_finished_quests(install)['profiles']
+    account = catalog.progress.resolve(profiles)
+    if not catalog.progress.account:
+        account = catalog.progress.refresh(install)['account']
+    selection = catalog.progress.selection
+    if selection[0] != account:
+        raise ValueError('游戏账号已切换，请重新扫描。')
     folder = install / 'Wuthering Waves Game/Client/Saved/Logs'
     files = [p for p in folder.glob('Client-backup-*.log') if p.is_file()]
     files.sort(key=lambda p: p.stat().st_mtime)
@@ -91,19 +104,24 @@ def scan(catalog, config):
     active, excluded, session = {}, set(), {}
     for file in files[-12:]:
         try:
-            reduce_events(log_events(file), active, excluded, session)
+            reduce_events(log_events(file), active, excluded, session, target=account)
         except FileNotFoundError:
             continue  # A rotation during reading is normal.
-    account = session.get('account') or (next(iter(profiles)) if len(profiles)==1 else '')
-    if account not in profiles:
-        raise ValueError('无法确认日志对应的游戏账号，请重新登录要扫描的账号后重试。')
     finished = profiles[account]
-    if catalog.progress.account == account:
-        for q, state in catalog.progress.states().items():
-            if state == 'completed':
-                finished.add(q)
-            if state == 'pending' and q not in excluded:
-                active.setdefault(q, '玩家已确认未完成')
+    for q, state in catalog.progress.states(account).items():
+        if state == 'completed':
+            finished.add(q)
+        if state == 'pending' and q not in excluded:
+            active.setdefault(q, '玩家已确认未完成')
+    if not session.get('seen'):
+        # A different player can rotate all of this player's logs out of the window.
+        # Only snapshots already written by the account-scoped scanner qualify.
+        if catalog.meta('scanned:'+account):
+            for scope,reason in catalog.db.execute(
+                    'SELECT scope,evidence FROM daily_discovered WHERE account=?',(account,)):
+                active.setdefault(scope.removeprefix('quest:'), '上次扫描 · '+reason.removeprefix('上次扫描 · '))
+        if not active:
+            raise ValueError('未找到所选账号的支线记录。请用该账号进入游戏，打开任务列表后重新扫描。')
     from wuwa_quest_names import repair, title
     repair(catalog)
     names = dict(catalog.db.execute("SELECT id,name FROM scopes WHERE kind='quest'"))
@@ -116,6 +134,7 @@ def scan(catalog, config):
         if q not in finished and scope in verified['quests'] and scope in names:
             quests.append((scope, title(q,names[scope]), evidence))
     quests.sort(key=lambda item: ('可接取' in item[2], item[1], item[0]))
+    catalog.progress.require(selection)
     return account, quests
 
 

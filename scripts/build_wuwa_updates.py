@@ -58,6 +58,14 @@ def package(out, name, props, payload):
 def build(args):
     from build_generator_release import source_files
     import wuwa_update as updater
+    # Bind the public destination in both clients, including the first-upgrade assistant.
+    repository = args.cnb_repository or updater.CNB_REPOSITORY
+    updater.cnb_releases(repository)
+    update_module = (ROOT / 'nte-dialogue-ocr/wuwa_update.py').read_text(encoding='utf-8')
+    binding = [line for line in update_module.splitlines() if line.startswith('CNB_REPOSITORY = ')]
+    if len(binding) != 1:
+        raise ValueError('Cannot bind the public CNB repository to the release')
+    update_module = update_module.replace(binding[0], 'CNB_REPOSITORY = ' + repr(repository)).encode('utf-8')
     version = (ROOT/'nte-dialogue-ocr/GENERATOR_VERSION').read_text().strip()
     from wuwa_claim_components import DIRECTORY, verified_wheels
     wheels = verified_wheels(args.claim_wheels)
@@ -75,7 +83,7 @@ def build(args):
             name = path.relative_to(ROOT).as_posix()
             if not updater.program_name(name) or path.name == 'auto_record_demos.py':
                 continue
-            data = path.read_bytes()
+            data = update_module if name == 'nte-dialogue-ocr/wuwa_update.py' else path.read_bytes()
             prior = manifest['files'].get(name)
             if prior == hashlib.sha256(data).hexdigest():
                 continue
@@ -122,7 +130,7 @@ def build(args):
                 raise ValueError('Previous release asset differs from its signed feed')
             shutil.copyfile(path, out / path.name)
             listing.append(item)
-    finish_release(out, listing, portable, version)
+    finish_release(out, listing, portable, version, update_module)
     print(f'{len(changes)} changed program files; {len(listing)} signed packages')
 
 
@@ -144,12 +152,13 @@ def add_resources(out, listing, old, args, version):
                            dict(kind='index',name='中文台词索引',revision=args.revision,minimum=version),index))
 
 
-def finish_release(out, listing, portable, version):
+def finish_release(out, listing, portable, version, update_module):
     # The .17 bootstrap runs in a separate folder and does not overwrite program files.
     bootstrap = out/'ASGSV-Update-Assistant.zip'
     with ZipFile(bootstrap,'w',ZIP_DEFLATED) as z:
-        for n in ('wuwa_update.py','wuwa_update_ui.py'):
-            z.write(ROOT/'nte-dialogue-ocr'/n,'ASGSV-Update/'+n)
+        z.writestr('ASGSV-Update/wuwa_update.py', update_module)
+        z.write(ROOT/'nte-dialogue-ocr/wuwa_update_ui.py','ASGSV-Update/wuwa_update_ui.py')
+        z.write(ROOT/'nte-dialogue-ocr/combo_popup.py','ASGSV-Update/combo_popup.py')
         z.writestr('ASGSV-Update/Start-Update.bat',
                    b'@echo off\r\ncd /d "%~dp0"\r\nif not exist "..\\runtime\\python\\python.exe" (echo Place ASGSV-Update next to ASGSV.exe & pause & exit /b 1)\r\n"..\\runtime\\python\\python.exe" -I -X utf8 "%~dp0wuwa_update_ui.py"\r\nif errorlevel 1 pause\r\n')
     tag = 'wuwa-v'+version
@@ -167,6 +176,7 @@ if __name__ == '__main__':
     parser.add_argument('--out',type=Path)
     parser.add_argument('--claim-wheels',type=Path)
     parser.add_argument('--previous-release',type=Path, help='Reuse signed resources and preserve earlier upgrade paths')
+    parser.add_argument('--cnb-repository', help='Public CNB repository path (group/repository)')
     parser.add_argument('--revision',type=int,default=1)
     args = parser.parse_args()
     if args.init_key:

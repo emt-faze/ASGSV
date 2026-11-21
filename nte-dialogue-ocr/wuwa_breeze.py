@@ -212,7 +212,7 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoke
                 db.commit()
                 return path,True
             raise ValueError('同一云端请求已有记录，请核对云端历史后处理，已避免重复扣额')
-        limit=int(catalog.meta('breeze_daily_credits','0'))*10
+        limit=min(400,int(catalog.meta('breeze_daily_credits','0')))*10
         if max_daily_credits is not None:
             limit = min(limit, max_daily_credits * 10)
         today=date.today().isoformat()

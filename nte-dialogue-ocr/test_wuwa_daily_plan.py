@@ -1,6 +1,10 @@
 from contextlib import ExitStack
 from datetime import datetime
 import json
+import sqlite3
+from contextlib import closing
+from wuwa_progress import cache_path
+from test_wuwa_progress import cache_value
 import unittest
 from unittest.mock import patch
 
@@ -26,10 +30,17 @@ class DailyTests(unittest.TestCase):
         self.ids=self.fixture.ids
         self.c.set_branch_rule(True)
         initialize(self.c)
-        enqueue(self.c,'test',[(self.scope,'示例')]*2)
+        install=json.loads((self.c.root/'config.json').read_text(encoding='utf8'))['install_root']
+        path=cache_path(install)
+        path.parent.mkdir(exist_ok=True,parents=True)
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute('CREATE TABLE LocalStorage(key TEXT PRIMARY KEY,value TEXT)')
+            db.execute('INSERT INTO LocalStorage VALUES(?,?)',('UserFinishedQuests',json.dumps(cache_value([('test',[])]))))
+        self.account=self.c.progress.refresh(install)['account']
+        enqueue(self.c,self.account,[(self.scope,'示例')]*2)
         self.stack=ExitStack()
         self.addCleanup(self.stack.close)
-        self.mock('wuwa_daily_plan.scan',('test',[(self.scope,'示例','进行中')]))
+        self.mock('wuwa_daily_plan.scan',(self.account,[(self.scope,'示例','进行中')]))
         self.rows=self.c.lines([self.scope])
         self.mock('wuwa_daily_plan.matched_lines',{self.scope:{r['id']:r['fingerprint'] for r in self.rows if r['id'] in self.ids}})
         self.mock('wuwa_breeze.api_key','testing')
@@ -51,8 +62,9 @@ class DailyTests(unittest.TestCase):
 
     def test_exclusions_and_held_reservation(self):
         with patch('wuwa_daily_plan.scan',return_value=('other',[])):
-            self.assertIn('计划为空',run(self.c))
-        with patch('wuwa_daily_plan.scan',return_value=('test',[])):
+            with self.assertRaisesRegex(ValueError,'账号'):
+                run(self.c)
+        with patch('wuwa_daily_plan.scan',return_value=(self.account,[])):
             self.assertIn('补齐 0',run(self.c))
         self.fetch.assert_not_called()
         text='测试'
@@ -194,7 +206,7 @@ class DailyTests(unittest.TestCase):
 
     def test_dialog_scan_select_remove(self):
         app=W.QApplication.instance() or W.QApplication([])
-        with patch('wuwa_daily_ui.manage',return_value={'registered':False}), patch('wuwa_daily_ui.scan',return_value=('test',[(self.scope,'演示任务','进行中')])):
+        with patch('wuwa_daily_ui.manage',return_value={'registered':False}), patch('wuwa_daily_ui.scan',return_value=(self.account,[(self.scope,'演示任务','进行中')])):
             dialog=DailyDialog(self.c)
             def wait():
                 if dialog.worker:

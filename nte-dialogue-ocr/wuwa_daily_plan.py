@@ -59,24 +59,32 @@ def config(c):
     return json.loads(path.read_text(encoding='utf-8-sig'))
 
 
-def record_scan(c, account, items):
+def record_scan(c, account, items, selection=None):
     initialize(c)
     with c.db:
+        c.db.execute('BEGIN IMMEDIATE')
+        if selection is not None:
+            c.progress.require(selection)
+        if not account or c.progress.account != account:
+            raise ValueError('游戏账号已切换，请重新扫描所选账号。')
         c.db.execute('DELETE FROM daily_discovered WHERE account=?',(account,))
         c.db.executemany('INSERT INTO daily_discovered VALUES(?,?,?,?)',
                          [(account,scope,name,reason) for scope,name,reason in items])
         c.db.execute("INSERT OR REPLACE INTO meta VALUES('daily_scan_revision',?)",(datetime.now().isoformat(timespec='microseconds'),))
         c.db.execute("INSERT OR REPLACE INTO meta VALUES('daily_scan_account',?)",(account,))
-        c.db.execute("INSERT OR REPLACE INTO meta VALUES('daily_account',?)",(account,))
+        c.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',('scanned:'+account,'1'))
         c.db.execute('UPDATE daily_plan SET name=coalesce((SELECT name FROM scopes WHERE id=daily_plan.scope),name) WHERE account=?',(account,))
 
 
 def enqueue(c, account, items):
     with c.db:
+        c.db.execute('BEGIN IMMEDIATE')
+        if not account or account != c.progress.account:
+            raise ValueError('所选账号已变化，请重新选择任务。')
         added = c.db.executemany("INSERT OR IGNORE INTO daily_plan VALUES(?,?,?,'等待执行')",
                          [(account, scope, name) for scope,name in items])
         if added.rowcount:
-            c.db.execute("DELETE FROM meta WHERE key='daily_finished_slot'")
+            c.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',('daily_finished_slot:'+account,''))
     return added.rowcount
 
 
@@ -85,17 +93,24 @@ def today_units(c):
                         (date.today().isoformat(),)).fetchone()[0]
 
 
-def run(c, *, scheduled=False, dry=False):
+def run(c, *, scheduled=False, dry=False, expected=None):
     initialize(c)
     guard = QLockFile(str(c.root/'daily-plan.lock'))
     guard.setStaleLockTime(0)
     if not guard.tryLock(0):
         return '每日计划正在另一进程执行'
+    selected = expected if expected is not None else c.progress.selection
     try:
-        return _run(c, scheduled, dry)
+        if expected is not None:
+            c.progress.require(expected)
+        if not c.progress.account and (not scheduled or c.meta('daily_enabled')=='1'):
+            c.progress.refresh(config(c)['install_root'])
+        selected = expected if expected is not None else c.progress.selection
+        return _run(c, scheduled, dry, selected)
     except Exception as exc:
         if not dry:
-            save_meta(c,daily_result='暂停 · '+str(exc),daily_updated=datetime.now().isoformat(timespec='seconds'))
+            save_meta(c,**{'daily_result:'+selected[0]:'暂停 · '+str(exc),
+                           'daily_updated':datetime.now().isoformat(timespec='seconds')})
         raise
     finally:
         guard.unlock()
@@ -110,25 +125,29 @@ def due_slot(now, at, since, finished):
     return slot.isoformat()
 
 
-def _run(c, scheduled, dry):
+def _run(c, scheduled, dry, selected):
     now = datetime.now()
     today = now.date().isoformat()
     if scheduled:
         if c.meta('daily_enabled') != '1':
             return '计划已关闭'
-        slot = due_slot(now,c.meta('daily_time','09:00'),c.meta('daily_since'),c.meta('daily_finished_slot'))
+        legacy = c.meta('daily_finished_slot') if c.meta('daily_account')==selected[0] else ''
+        slot = due_slot(now,c.meta('daily_time','09:00'),c.meta('daily_since'),c.meta('daily_finished_slot:'+selected[0],legacy))
         if not slot:
             return '等待下次计划'
     cfg = config(c)
     account, candidates = scan(c,cfg)
+    c.progress.require(selected)
+    if account != selected[0]:
+        raise ValueError('扫描账号和所选游戏账号不符，已暂停。')
     if not dry:
-        record_scan(c,account,candidates)
+        record_scan(c,account,candidates,selected)
     active = {scope for scope,_,_ in candidates}
     queued = c.db.execute('SELECT scope,name FROM daily_plan WHERE account=? ORDER BY rowid',(account,)).fetchall()
     if dry:
         return f'扫描确认 {len(active)} 项 · 当前账号计划 {len(queued)} 项 · 今日账本 {today_units(c)/10:g} 积分'
     def checkpoint(message):
-        save_meta(c,daily_result=message,daily_updated=datetime.now().isoformat(timespec='seconds'))
+        save_meta(c,**{'daily_result:'+account:message,'daily_updated':datetime.now().isoformat(timespec='seconds')})
     if not queued:
         checkpoint('当前账号的计划为空')
         return '当前账号的计划为空'
@@ -148,6 +167,7 @@ def _run(c, scheduled, dry):
         with c.db:
             c.db.execute('UPDATE daily_plan SET status=? WHERE account=? AND scope=?',(msg,account,scope))
     def enrolled(scope):
+        c.progress.require(selected)
         return c.db.execute('SELECT 1 FROM daily_plan WHERE account=? AND scope=?',(account,scope)).fetchone()
     from quest_library import playable, prepare_cast
     audio,_ = playable(c,cfg)
@@ -288,10 +308,11 @@ def _run(c, scheduled, dry):
         details = '；'.join(f'{why} {n} 句' for why,n in counts.items())
         deferred |= bool(counts)
         status(scope,f'已就绪 {ready}/{len(approved)} 句'+(' · '+details if details else ''))
+    c.progress.require(selected)
     summary=f'本次补齐 {made} 句 · 今日共预留 {today_units(c)/10:g}/{limit/10:g} 积分'
     checkpoint(summary)
     if scheduled and not deferred:
-        save_meta(c,daily_finished_slot=slot)
+        save_meta(c,**{'daily_finished_slot:'+account:slot})
     return summary
 
 
@@ -300,10 +321,12 @@ def main():
     parser.add_argument('--root',required=True,type=Path)
     parser.add_argument('--scheduled',action='store_true')
     parser.add_argument('--dry-run',action='store_true')
+    parser.add_argument('--selection', nargs=2, metavar=('ACCOUNT','REVISION'))
     args=parser.parse_args()
     catalog=Catalog(args.root.resolve())
     try:
-        result=run(catalog,scheduled=args.scheduled,dry=args.dry_run)
+        result=run(catalog,scheduled=args.scheduled,dry=args.dry_run,
+                   expected=tuple(args.selection) if args.selection else None)
         if __import__('sys').stdout:
             print(result)
         return 0

@@ -13,6 +13,7 @@ from wuwa_breeze import strip_asides
 from wuwa_log_generation import existing_audio
 from wuwa_surface import AccentButton
 from wuwa_voice_pack import load_pack, pack_matches
+from wuwa_account_ui import GameAccountButton
 
 
 @dataclass
@@ -51,7 +52,7 @@ def read_library(root):
         from wuwa_quest_names import repair,title
         initialize(catalog)
         repair(catalog)
-        account=catalog.meta('daily_scan_account')
+        account=catalog.progress.account
         discovered={scope:(name,reason) for scope,name,reason in catalog.db.execute(
             'SELECT scope,name,evidence FROM daily_discovered WHERE account=?',(account,))}
         manifest=root/'sources/local-inventory.json'
@@ -148,13 +149,15 @@ def prepare_cast(catalog, scope, rows):
             catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('cast_source:' + scope, 'automatic'))
 
 
-def generate_missing(root, scope, ids, stop, progress, on_ready=None):
+def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selection=None, discovered_only=False):
     """Use the installed batch engine, including its voice, budget and cache checks."""
     from wuwa_resources import inventory
     config = json.loads((root / 'config.json').read_text(encoding='utf8'))
     mounted=inventory(config['install_root'], root)
     catalog = Catalog(root)
     try:
+        if selection is not None:
+            catalog.progress.require(selection)
         available, _ = playable(catalog, config)
         pending = set(ids).difference(available)
         if not pending or stop.is_set():
@@ -163,15 +166,22 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None):
         direct, single_lines, eligible = set(), [], []
         if catalog.progress.account or (Path(config['install_root']) / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db').is_file():
             catalog.progress.refresh(config['install_root'])
+        if selection is None:
+            selection = catalog.progress.selection
+        catalog.progress.require(selection)
+        if catalog.progress.states(selection[0]).get(scope.removeprefix('quest:'))=='completed':
+            raise ValueError('所选账号已完成此任务，已停止配音。')
         from wuwa_daily_plan import initialize
         from wuwa_daily_scan import scan,matched_lines
         initialize(catalog)
         seen=catalog.db.execute('SELECT 1 FROM daily_discovered WHERE account=? AND scope=?',
-                                (catalog.meta('daily_scan_account'),scope)).fetchone()
+                                (selection[0],scope)).fetchone()
+        if discovered_only and not seen:
+            raise ValueError('当前任务不在所选账号的扫描结果中，请重新选择任务。')
         confirmed={}
         if seen:
             active_account, latest = scan(catalog,config)
-            if active_account!=catalog.meta('daily_scan_account') or scope not in {s for s,_,_ in latest}:
+            if active_account!=selection[0] or scope not in {s for s,_,_ in latest}:
                 raise ValueError('当前账号或任务进度已变化，请重新扫描支线')
             confirmed=matched_lines(mounted).get(scope,{})
             if not confirmed:
@@ -204,6 +214,7 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None):
         problems = []
         def run_project(scopes, selected, single=False):
             nonlocal done
+            catalog.progress.require(selection)
             project, _ = catalog.prepare_project(scopes, config, selected, live_line=single)
             lock = C.QLockFile(str(project.directory / 'project.lock'))
             lock.setStaleLockTime(0)
@@ -211,7 +222,8 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None):
                 raise ValueError('此配音项目正在其他窗口使用')
             try:
                 runner = BatchGenerator(project, dict(config['dubbing'], catalog_root=str(root)),
-                                        lambda event: progress(event['message']) if event.get('message') else None)
+                                        lambda event: progress(event['message']) if event.get('message') else None,
+                                        check_selection=lambda:catalog.progress.require(selection))
                 runner.stop_event = stop
                 result = runner.run()
                 done += result['completed'] + result['resumed']
@@ -233,6 +245,7 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None):
         # Ordinary side quests use the same verified single-line preparation as the daily queue.
         members=catalog.lines([scope])
         for row in single_lines:
+            catalog.progress.require(selection)
             if stop.is_set() or any('预算' in msg or 'API Key' in msg for msg in problems):
                 break
             try:
@@ -314,10 +327,15 @@ class QuestLibrary(W.QWidget):
         filters.addStretch()
         self.daily_plan_button = W.QPushButton('每日配音计划')
         self.daily_plan_button.clicked.connect(self.open_daily_plan)
+        self.account_button = GameAccountButton(catalog, self)
+        self.account_button.changed.connect(self.account_changed)
+        self.account_button.problem.connect(self.set_work_status)
         self.discovered_only=W.QCheckBox('扫描到的支线')
-        self.discovered_only.setChecked(bool(catalog.meta('daily_scan_account')))
+        self.discovered_only.setChecked(bool(catalog.progress.account and (
+            catalog.meta('scanned:'+catalog.progress.account) or catalog.meta('daily_scan_account')==catalog.progress.account)))
         self.discovered_only.toggled.connect(self.filter_changed)
         filters.addWidget(self.discovered_only)
+        filters.addWidget(self.account_button)
         filters.addWidget(self.daily_plan_button)
         self.search = W.QLineEdit()
         self.search.setPlaceholderText('搜索任务名称')
@@ -408,13 +426,15 @@ class QuestLibrary(W.QWidget):
         return table
 
     def check_catalog(self):
-        revision=(self.catalog.meta('daily_scan_revision'),self.catalog.meta('daily_updated'))
+        self.account_button.sync()
+        revision=(self.catalog.progress.selection,self.catalog.meta('daily_scan_revision'),self.catalog.meta('daily_updated'))
         if revision!=self.revision:
             self.revision=revision
             self.reload()
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.account_button.detect_single()
         self.catalog_poll.start()
         self.check_catalog()
         self.reload()
@@ -438,6 +458,11 @@ class QuestLibrary(W.QWidget):
         self.discovered_only.setChecked(True)
         self.reload()
 
+    def account_changed(self):
+        self.page_number = 0
+        self.set_work_status('当前游戏账号 · '+self.catalog.progress.label(self.catalog.progress.account))
+        self.reload()
+
     def mark_ready(self,identity,clip):
         self.audio[identity]=clip
         for quest in self.quests.values():
@@ -454,6 +479,7 @@ class QuestLibrary(W.QWidget):
         if self.reader.isRunning():
             self.reload_pending = True
         elif self.isVisible():
+            self.reader_selection = self.catalog.progress.selection
             self.reader.start()
         self.update_actions()
 
@@ -475,6 +501,9 @@ class QuestLibrary(W.QWidget):
 
     def loaded(self, result):
         if self.closing:
+            return
+        if getattr(self,'reader_selection',self.catalog.progress.selection) != self.catalog.progress.selection:
+            self.reload_pending=True
             return
         self.quests, self.audio, self.packed = result
         if self.requested_scope and self.requested_scope not in self.quests:
@@ -589,8 +618,9 @@ class QuestLibrary(W.QWidget):
 
     def generate_current(self):
         q = self.quests.get(self.scope)
-        if q and self.generate.isEnabled():
-            self.generate_requested.emit(self.scope, [i for i in q.ids if i not in self.audio])
+        scope = self.scope
+        if q and self.generate.isEnabled() and self.account_button.ensure(allow_missing=True):
+            self.generate_requested.emit(scope, [i for i in q.ids if i not in self.audio])
 
     def preview_current(self):
         row = self.lines.currentRow()
