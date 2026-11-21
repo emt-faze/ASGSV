@@ -93,3 +93,4 @@ def save_review(catalog, quest, roles):
             catalog.db.execute('INSERT OR REPLACE INTO breeze_cast VALUES(?,?)',(sid,preset[0]))
         catalog.db.execute('INSERT OR REPLACE INTO quest_cast_reviews VALUES(?,?)',
                            (quest,json.dumps(roles,sort_keys=True)))
+        catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',('cast_source:'+quest,'manual'))

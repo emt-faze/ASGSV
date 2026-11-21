@@ -79,13 +79,14 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(today_units(self.c),3999)
 
     def test_cast_uses_context_and_preserves_user_binding(self):
-        row=next(r for r in self.rows if r['speaker_id']=='10')
         save_meta(self.c,daily_cast_enabled='1',daily_cast_endpoint='https://model.example/v1',daily_cast_model='demo')
         with self.c.db:
             self.c.db.execute("delete from breeze_cast where speaker_id='10'")
+            self.c.db.execute("UPDATE lines SET raw_text='我是个年轻姑娘，生意照样做得！' WHERE id=?",(self.ids[0],))
+        self.rows=self.c.lines([self.scope])
+        row=next(r for r in self.rows if r['id']==self.ids[0])
         evidence=row['raw_text']
-        profile=dict(gender='female',age='young',personality='干脆直率',voice_id='voc_second',evidence=evidence,confidence=.92)
-        with patch('wuwa_cast_context.quest_suggestion',return_value=(None,None,[])), patch('wuwa_daily_cast.infer',return_value=profile) as model:
+        with patch('wuwa_daily_cast.infer',side_effect=self.cast_reply) as model:
             self.assertEqual(voice_for(self.c,self.scope,row,self.rows),'voc_second')
             self.assertEqual(voice_for(self.c,self.scope,row,self.rows),'voc_second')
             self.assertEqual(model.call_count,1)
@@ -93,7 +94,11 @@ class DailyTests(unittest.TestCase):
             with self.c.db:
                 self.c.db.execute("DELETE FROM breeze_cast WHERE speaker_id='10'")
                 self.c.db.execute("DELETE FROM daily_profiles")
-            model.return_value=dict(profile,evidence='并不存在的引文')
+            def wrong_citation(*args):
+                profile=self.cast_reply(*args)
+                profile['evidence']['age']=dict(line='D1',quote='并不存在的引文')
+                return profile
+            model.side_effect=wrong_citation
             for _ in range(2):
                 with self.assertRaisesRegex(ValueError,'证据不足'):
                     voice_for(self.c,self.scope,row,self.rows)
@@ -121,13 +126,15 @@ class DailyTests(unittest.TestCase):
     def enable_two_speakers(self):
         save_meta(self.c,daily_cast_enabled='1',daily_cast_endpoint='https://model.example/v1',daily_cast_model='demo')
         with self.c.db:
-            self.c.db.execute("UPDATE lines SET speaker_id='11',speaker='新角色' WHERE id=?",(self.ids[1],))
+            self.c.db.execute("UPDATE lines SET speaker_id='11',speaker='新角色',raw_text='我是个年轻姑娘，可没说过要认输。' WHERE id=?",(self.ids[1],))
 
     @staticmethod
     def cast_reply(base,model,speaker,dialogue,voices,requirements):
         voice=next(v for v in voices if v['id']==requirements.get('voice_id','voc_second'))
-        return dict(gender=voice['gender'],age=voice['age'],personality='自然轻快',
-                    voice_id=voice['id'],evidence=[dialogue[0][1],speaker],confidence=.95)
+        line=next(t for t in dialogue if t['relation']=='self' and (t['cues'] or requirements.get('voice_id')))
+        ref=dict(line=line['id'],quote=line['text'])
+        return dict(decision='cast',gender=voice['gender'],age=voice['age'],personality='自然轻快',
+                    voice_id=voice['id'],evidence=dict(gender=ref,age=ref,delivery=ref),confidence=.95)
 
     def test_daily_cast_finishes_before_tts_and_directs_both_voices(self):
         self.enable_two_speakers()
@@ -147,6 +154,29 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(self.c.binding('10')['voice'],'breeze:voc_demo')
         self.assertEqual(self.c.binding('11')['voice'],'breeze:voc_second')
         self.assertEqual(self.c.db.execute('SELECT count(*) FROM daily_voice_choices').fetchone()[0],2)
+
+    def test_confident_misattribution_is_held_before_any_charge(self):
+        from wuwa_audition import NeedsAudition, pending
+        self.enable_two_speakers()
+        with self.c.db:
+            self.c.db.execute("UPDATE lines SET raw_text='稍等，我来了。' WHERE speaker_id='11'")
+            self.c.db.execute("UPDATE lines SET raw_text='老夫来帮你。' WHERE speaker_id='10'")
+            self.c.db.execute("INSERT INTO breeze_presets VALUES('voc_senior','长者','male','old')")
+        members=self.c.lines([self.scope])
+        target=next(r for r in members if r['speaker_id']=='11')
+        def wrong_actor(base,model,speaker,dialogue,voices,requirements):
+            other=next(t for t in dialogue if t['text']=='老夫来帮你。')
+            own=next(t for t in dialogue if t['relation']=='self')
+            identity=dict(line=other['id'],quote=other['text'])
+            return dict(decision='cast',voice_id='voc_senior',gender='male',age='old',confidence=.99,
+                        personality='沉稳',evidence=dict(gender=identity,age=identity,delivery=dict(line=own['id'],quote=own['text'])))
+        with patch('wuwa_daily_cast.infer',side_effect=wrong_actor):
+            with self.assertRaisesRegex(NeedsAudition,'性别引文'):
+                voice_for(self.c,self.scope,target,members)
+        self.assertIsNone(self.c.binding('11'))
+        self.assertEqual(pending(self.c,'11')['candidate'],'voc_senior')
+        self.assertEqual(today_units(self.c),0)
+        self.fetch.assert_not_called()
 
     def test_failed_preflight_spends_no_tts_credits_and_retry_reuses_today(self):
         self.enable_two_speakers()
