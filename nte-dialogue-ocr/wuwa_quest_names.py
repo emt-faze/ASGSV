@@ -16,7 +16,7 @@ def repair(c):
     missing=list(c.db.execute("SELECT id,name FROM scopes WHERE kind='quest' AND name NOT GLOB '*[^0-9]*'"))
     if not missing:
         return
-    folder=c.root/'sources'/COMMIT
+    folder=c.index_folder()
     info=folder/'source.json'
     if not info.is_file():
         return

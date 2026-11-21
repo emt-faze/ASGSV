@@ -12,18 +12,44 @@ def mount_signature(inventory):
 
 
 def load_pack(root, *, allow_missing_audio=False):
-    folder = root / 'voice-pack'
+    from wuwa_update import quest_state, HASH
+    if not (root/'sources/local-inventory.json').is_file():
+        return {}
+    inventory=json.loads((root/'sources/local-inventory.json').read_bytes())
+    signature=mount_signature(inventory)
+    result=_load_folder(root/'voice-pack',signature,allow_missing_audio)
+    for scope,entry in quest_state(root).items():
+        if not HASH.fullmatch(entry['folder']):
+            raise ValueError('任务配音快照编号无效')
+        folder=root/'updates'/entry['folder']
+        newer=_load_folder(folder,signature,allow_missing_audio)
+        if newer:
+            result={k:v for k,v in result.items() if v[0]['quest']!=scope}
+            conflicts=result.keys() & newer.keys()
+            if conflicts:
+                raise ValueError('两个任务包包含相同的日志台词编号')
+            result.update(newer)
+    return result
+
+
+def _load_folder(folder, signature, allow_missing_audio):
     manifest = folder / 'pack.json'
     if not manifest.is_file():
         return {}
     data = json.loads(manifest.read_text(encoding='utf8'))
-    inventory = json.loads((root/'sources/local-inventory.json').read_text(encoding='utf8'))
-    signature = mount_signature(inventory)
-    if (data['format'] != 1 or not signature
-            or signature not in [data['mounts'], *data.get('additional_mounts', [])]):
+    if data['format'] != 1 or not signature:
         return {}
+    verified=None
+    if signature not in [data['mounts'], *data.get('additional_mounts', [])]:
+        from wuwa_daily_scan import verified_index
+        index=verified_index()
+        if signature!=index['mounts']:
+            return {}
+        verified=index['quests']
     result = {}
     for row in data['lines']:
+        if verified is not None and verified.get(row['quest'],{}).get(row['id'])!=row['fingerprint']:
+            continue
         key = row['state'], row['number']
         sha = row['sha256']
         if key in result or not re.fullmatch('[0-9a-f]{64}', sha):

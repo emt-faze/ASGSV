@@ -77,9 +77,11 @@ def allowed_scopes(review, states):
 
 def load_references(root, review_path):
     review = json.loads(Path(review_path).read_text(encoding='utf-8'))
-    folder = root / 'sources' / COMMIT
+    with closing(readonly_db(root/'dialogue.sqlite')) as db:
+        active=dict(db.execute("SELECT key,value FROM meta WHERE key IN ('index_folder','index_commit')"))
+    folder = root/'updates'/active['index_folder'] if active.get('index_folder') else root/'sources'/COMMIT
     source = json.loads((folder / 'source.json').read_text(encoding='utf-8'))
-    if source.get('commit') != COMMIT:
+    if source.get('commit') != active.get('index_commit',COMMIT):
         raise ValueError('Source commit mismatch')
     audio_path = folder / 'audio.json'
     if sha256(audio_path) != source['files']['audio']['sha256']:

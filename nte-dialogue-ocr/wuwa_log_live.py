@@ -176,6 +176,9 @@ class LogWorker(QtCore.QThread):
             inventory(config['install_root'],self.root)
             catalog=Catalog(self.root)
             self.version=catalog.local_version()
+            from wuwa_update import quest_state
+            packs=quest_state(self.root)
+            index_revision=catalog.meta('index_revision')
             self.pack=load_pack(self.root)
             settings,_=playback_settings(config['dubbing'])
             self.audio,projects,held=existing_audio(catalog,config)
@@ -231,6 +234,16 @@ class LogWorker(QtCore.QThread):
                             self.log_readable = True
                             self.emit(log_connection='已连接鸣潮日志')
                         decision=(self.decision(catalog,subtitle),catalog.branch_rule_enabled())
+                        revision=catalog.meta('index_revision')
+                        if revision!=index_revision:
+                            index_revision=revision
+                            if subtitle==last:
+                                stamp=decision
+                        if subtitle!=last:
+                            active=quest_state(self.root)
+                            if active!=packs:
+                                self.pack=load_pack(self.root)
+                                packs=active
                         refresh = self.needs_voice_refresh(decision[0])
                         if subtitle!=last or decision!=stamp or refresh:
                             last=subtitle

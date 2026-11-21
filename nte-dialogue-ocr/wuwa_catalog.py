@@ -55,9 +55,9 @@ def ordinary_branch(data):
 
 
 @lru_cache(maxsize=2)
-def branch_policy_index(folder, manifest_digest):
+def branch_policy_index(folder, manifest_digest, source_commit=COMMIT):
     manifest = json.loads((folder/'source.json').read_text(encoding='utf-8'))
-    if manifest.get('commit') != COMMIT:
+    if manifest.get('commit') != source_commit:
         raise ValueError('任务分类来源版本不匹配')
     def table(name):
         raw = (folder/(name+'.json')).read_bytes()
@@ -113,10 +113,12 @@ class Catalog:
             return row['basis']
         if not allow_branch or row['source_id']!=COMMIT or (row['voice_status']=='unknown' and row['reviewed_at']):
             return ''
-        if not hasattr(self,'_branch_policy'):
+        snapshot=self.meta('index_folder')
+        if not hasattr(self,'_branch_policy') or snapshot!=getattr(self,'_branch_snapshot',''):
+            self._branch_snapshot=snapshot
             try:
-                folder=self.root/'sources'/COMMIT
-                self._branch_policy=branch_policy_index(folder,file_digest(folder/'source.json'))
+                folder=self.index_folder()
+                self._branch_policy=branch_policy_index(folder,file_digest(folder/'source.json'),self.meta('index_commit',COMMIT))
             except (OSError,ValueError,KeyError,TypeError):
                 self._branch_policy=(set(),set())
         scopes, eligible=self._branch_policy
@@ -188,12 +190,24 @@ class Catalog:
         data = json.loads(path.read_text(encoding='utf-8'))
         return digest([(m['path'], m['sha256']) for m in data['mounts']])
 
-    def import_public(self, folder, stop=None, progress=lambda _: None):
+    def index_folder(self):
+        key=self.meta('index_folder')
+        if key and not re.fullmatch('[a-f0-9]{64}',key):
+            raise ValueError('台词索引快照编号无效')
+        return self.root/'updates'/key if key else self.root/'sources'/COMMIT
+
+    def import_public(self, folder, stop=None, progress=lambda _: None, *, revision=None):
         stop = stop or threading.Event()
         folder = Path(folder)
         source = json.loads((folder / 'source.json').read_text(encoding='utf-8'))
-        if source.get('commit') != COMMIT:
-            raise ValueError('来源提交不匹配')
+        if revision is None:
+            if self.meta('index_folder'):
+                raise ValueError('已有热更新索引，请从更新中心检查新版')
+            if source.get('commit') != COMMIT:
+                raise ValueError('来源提交不匹配')
+        elif (folder.parent.resolve()!=(self.root/'updates').resolve() or not re.fullmatch('[a-f0-9]{64}',folder.name)
+              or not re.fullmatch('[a-f0-9]{40}',source.get('commit','')) or source.get('repository')!=SOURCE['repository']):
+            raise ValueError('签名索引来源不匹配')
         def read(name):
             from dialogue_generation import file_digest
             path = folder / (name + '.json')
@@ -224,6 +238,12 @@ class Catalog:
         counts = dict(added=0, changed=0, unchanged=0, missing_text=0)
         seen = set()
         with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            if int(self.meta('index_revision','0'))>=(revision or 0) and self.meta('index_folder'):
+                raise ValueError('当前已有相同或更新的索引')
+            if revision is not None:
+                self.db.executemany('INSERT OR REPLACE INTO meta VALUES(?,?)',(
+                    ('index_revision',str(revision)),('index_folder',folder.name),('index_commit',source['commit'])))
             self.db.execute('INSERT OR REPLACE INTO sources VALUES(?,?)', (COMMIT, json.dumps(source, ensure_ascii=False)))
             self.db.execute('DELETE FROM scope_lines WHERE line_id IN (SELECT id FROM lines WHERE source_id=?)', (COMMIT,))
             self.db.execute("DELETE FROM scopes WHERE kind IN ('flow','quest')")

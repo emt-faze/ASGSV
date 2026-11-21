@@ -12,6 +12,7 @@ from dialogue_generation import file_digest
 from wuwa_catalog import Catalog, resolve_text
 from wuwa_daily_scan import scan, matched_lines
 from wuwa_daily_cast import voice_for
+from wuwa_daily_precast import DailyCasting
 from wuwa_resources import inventory
 from wuwa_log_generation import export_cloud
 import wuwa_breeze as breeze
@@ -26,12 +27,29 @@ def initialize(c):
             account TEXT NOT NULL, scope TEXT NOT NULL, name TEXT NOT NULL, evidence TEXT NOT NULL,
             PRIMARY KEY(account,scope));
         CREATE TABLE IF NOT EXISTS daily_profiles(speaker TEXT PRIMARY KEY,signature TEXT,profile TEXT);
+        CREATE TABLE IF NOT EXISTS daily_voice_choices(
+            day TEXT NOT NULL, speaker TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT NOT NULL,
+            voice TEXT NOT NULL, delivery TEXT NOT NULL, evidence TEXT NOT NULL,
+            PRIMARY KEY(day,speaker));
     ''')
 
 
 def save_meta(c, **values):
     with c.db:
         c.db.executemany('INSERT OR REPLACE INTO meta VALUES(?,?)', values.items())
+
+
+def enable_casting(c, base, model, key=''):
+    from wuwa_daily_cast import endpoint, credential, test_connection
+    base, model, key = endpoint(base), model.strip(), key.strip()
+    secret = key or credential(base)
+    if not model or not secret:
+        raise ValueError('请填写模型名称和该服务的 API Key')
+    confirmation = test_connection(base,model,secret)
+    if key:
+        credential(base,key)
+    save_meta(c,daily_cast_endpoint=base,daily_cast_model=model,daily_cast_enabled='1')
+    return '每日选声已启用，下次配音前自动执行。'+confirmation
 
 
 def config(c):
@@ -140,6 +158,35 @@ def _run(c, scheduled, dry):
     scanned_at = monotonic()
     if limit <= 0:
         raise ValueError('每日预算为 0，请在每日计划的「配音与预算」中填写当日积分上限。')
+    casting = None
+    if c.meta('daily_cast_enabled')=='1':
+        casting = DailyCasting(c,limit-today_units(c),checkpoint)
+        checkpoint('配音前选声 · 正在核对当日角色、录音和可用预算')
+        for scope,name in queued:
+            if scope not in active or not enrolled(scope):
+                continue
+            members = c.lines([scope])
+            approved = verified.get(scope,{})
+            for row in members:
+                if (row['id'] in audio or approved.get(row['id'])!=row['fingerprint']
+                        or not c.voice_basis(row,version,allow_branch=True)):
+                    continue
+                body, unknown = resolve_text(row['raw_text'],cfg.get('nickname','漂泊者'),cfg.get('traveler_gender','female'))
+                spoken = breeze.spoken_text(body,c.root)
+                if unknown or not any(ch.isalnum() for ch in spoken):
+                    continue
+                if (not enrolled(scope) or (scheduled and c.meta('daily_enabled')!='1')
+                        or date.today().isoformat()!=today):
+                    checkpoint('计划或日期已变化，选声已停止')
+                    return '计划或日期已变化，选声已停止'
+                casting.consider(scope,row,members,body,spoken)
+        checkpoint(f'配音前选声完成 · 已分析或沿用当日档案 {len(casting.speakers)} 位')
+        # Cast analysis can take minutes. Refresh account and progress before the first export.
+        current_account, latest = scan(c,cfg)
+        if current_account!=account:
+            raise ValueError('游戏账号已切换，计划已暂停')
+        active = {s for s,_,_ in latest}
+        scanned_at = monotonic()
     for scope,name in queued:
         if not enrolled(scope):
             continue
@@ -183,17 +230,20 @@ def _run(c, scheduled, dry):
             if unresolved or not any(ch.isalnum() for ch in spoken):
                 counts['台词无可合成正文或含未知变量'] += 1
                 continue
-            if sid not in voices and not c.binding(sid) and today_units(c)+2*len(spoken)>limit:
+            if not casting and sid not in voices and not c.binding(sid) and today_units(c)+2*len(spoken)>limit:
                 counts['等待次日预算'] += 1
                 continue
-            if sid not in voices:
+            if casting:
+                vid,problem = casting.activate(scope,row,body,spoken)
+            elif sid not in voices:
                 try:
                     voices[sid] = (voice_for(c,scope,row,rows), '')
                 except ValueError as exc:
                     if '服务' in str(exc) or 'API Key' in str(exc):
                         raise
                     voices[sid] = ('',str(exc))
-            vid,problem = voices[sid]
+            if not casting:
+                vid,problem = voices[sid]
             if problem:
                 counts[row['speaker']+' · '+problem] += 1
                 continue

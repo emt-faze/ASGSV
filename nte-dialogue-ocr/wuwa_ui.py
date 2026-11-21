@@ -446,6 +446,10 @@ class GameHome(W.QDialog):
             top.addWidget(button)
             if icon == 'settings':
                 self.settings = button
+        self.update_button=W.QPushButton('更新')
+        self.update_button.setToolTip('检查在线升级、更新配音资源或导入网盘更新包')
+        self.update_button.clicked.connect(self.open_update_center)
+        top.addWidget(self.update_button)
         self.advanced_toggle = W.QToolButton()
         self.advanced_toggle.setText('高级')
         self.advanced_toggle.setToolTip('异环采集与字幕校准选项')
@@ -529,6 +533,33 @@ class GameHome(W.QDialog):
         from workbench_ipc import WorkbenchRequests
         self.requests = WorkbenchRequests(self.preference, self)
         self.requests.requested.connect(self.request_workspace)
+        from wuwa_update import notify_healthy
+        QtCore.QTimer.singleShot(0,lambda:notify_healthy(CODE_ROOT.parent))
+
+    def open_update_center(self):
+        from wuwa_update_ui import UpdateCenter
+        dialog=UpdateCenter(CODE_ROOT.parent,self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def queue_program_update(self,archive):
+        from wuwa_update_ui import launch_apply
+        self.update_button.setEnabled(False)
+        def restart_when_idle():
+            if ((self.worker and self.worker.isRunning()) or self.nte.busy()
+                    or self.live.progress_start is not None or self.live.jobs.activity[0]=='busy'
+                    or (self.child and self.child.isVisible())):
+                self.status.setText('新版已就绪，将在当前播放、编辑或生成结束后升级')
+                QtCore.QTimer.singleShot(700,restart_when_idle)
+                return
+            try:
+                launch_apply(CODE_ROOT.parent,archive)
+            except OSError as exc:
+                self.status.setText('启动更新器失败 · '+str(exc))
+                self.update_button.setEnabled(True)
+                return
+            self.close()
+        QtCore.QTimer.singleShot(0,restart_when_idle)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -773,6 +804,9 @@ class GameHome(W.QDialog):
         self.worker.start()
 
     def start_import(self):
+        if self.catalog.meta('index_folder'):
+            self.open_update_center()
+            return
         root = self.root
         def work(stop, progress):
             folder = download_tables(root, stop, progress)

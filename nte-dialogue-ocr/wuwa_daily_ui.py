@@ -2,9 +2,9 @@
 from datetime import datetime
 from PySide6 import QtCore as C, QtWidgets as W
 from wuwa_catalog import Catalog
-from wuwa_daily_plan import config, enqueue, initialize, run, save_meta, today_units
+from wuwa_daily_plan import config, enqueue, initialize, run, save_meta, today_units, enable_casting
 from wuwa_daily_scan import scan
-from wuwa_daily_cast import credential, endpoint, DEFAULT_BASE, DEFAULT_MODEL, test_connection
+from wuwa_daily_cast import DEFAULT_BASE, DEFAULT_MODEL, test_connection
 from wuwa_daily_plan import record_scan
 from wuwa_plan_controls import BudgetPane, PLAN_STYLE
 from wuwa_daily_scheduler import manage
@@ -108,8 +108,7 @@ class DailyDialog(W.QDialog):
         self.tabs.addTab(options,'后台时间')
         ai=W.QWidget()
         form=W.QFormLayout(ai)
-        self.ai=W.QCheckBox('为尚未选声的 NPC 分析性别、年龄和性格')
-        self.ai.setChecked(c.meta('daily_cast_enabled')=='1')
+        self.cast_state=W.QLabel()
         self.base=W.QLineEdit(c.meta('daily_cast_endpoint') or DEFAULT_BASE)
         self.base.setPlaceholderText(DEFAULT_BASE)
         self.model=W.QLineEdit(c.meta('daily_cast_model') or DEFAULT_MODEL)
@@ -117,7 +116,7 @@ class DailyDialog(W.QDialog):
         self.secret=W.QLineEdit()
         self.secret.setEchoMode(W.QLineEdit.Password)
         self.secret.setPlaceholderText('填写或更新密钥，留空沿用此地址保存的密钥')
-        for label,field in [('',self.ai),('兼容 Chat Completions 的 API 基址',self.base),
+        for label,field in [('每日选声',self.cast_state),('兼容 Chat Completions 的 API 基址',self.base),
                             ('模型名称',self.model)]:
             form.addRow(label,field)
         self.verify=W.QPushButton('测试连接 / 验证 Key')
@@ -127,11 +126,21 @@ class DailyDialog(W.QDialog):
         key_row.addWidget(self.verify)
         form.addRow('角色分析 API Key',key_row)
         self.verify.clicked.connect(self.verify_key)
-        hint=W.QLabel('启用后，只向所填的模型服务发送角色名、相关对白和候选音色。模型费用由该服务单独结算。已绑定的声线优先沿用。')
+        hint=W.QLabel('先分析当天预算内的角色，再开始配音。模型依据对白选择音色和语气，已有绑定沿用原音色。同一天再次执行会复用档案。模型服务单独计费。')
         hint.setWordWrap(True)
         form.addRow(hint)
-        self.save_ai=W.QPushButton('保存角色分析设置')
-        form.addRow('',self.save_ai)
+        self.save_ai=W.QPushButton('保存并启用每日选声')
+        self.save_ai.setObjectName('verifyKey')
+        self.disable_ai=W.QPushButton('停用每日选声')
+        self.disable_ai.clicked.connect(self.disable_casting)
+        actions=W.QHBoxLayout()
+        actions.addWidget(self.save_ai)
+        actions.addWidget(self.disable_ai)
+        form.addRow('',actions)
+        self.cast_today=self.table(['角色','音色','表达提示'])
+        self.cast_today.setAccessibleName('今日选声')
+        self.cast_today.setMinimumHeight(90)
+        form.addRow('今日选声',self.cast_today)
         self.tabs.addTab(ai,'角色分析')
         self.feedback=W.QLabel()
         self.feedback.setWordWrap(True)
@@ -151,9 +160,16 @@ class DailyDialog(W.QDialog):
         self.poll=C.QTimer(self)
         self.poll.setInterval(2500)
         self.poll.timeout.connect(self.refresh)
-        self.poll.start()
         self.refresh()
         self.start(lambda c:manage(c.root,'query'),self.show_schedule,'正在检查后台计划…')
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        self.poll.start()
+
+    def hideEvent(self,event):
+        self.poll.stop()
+        super().hideEvent(event)
 
     @staticmethod
     def table(headers):
@@ -239,8 +255,11 @@ class DailyDialog(W.QDialog):
 
     def selection(self):
         busy=bool(self.worker)
+        self.disable_ai.setEnabled(not busy and self.c.meta('daily_cast_enabled')=='1')
         for b in (self.detect_button,self.index_button,self.enable,self.disable,self.save_ai,self.verify,self.budget_pane.save):
             b.setEnabled(not busy)
+        for field in (self.base,self.model,self.secret):
+            field.setEnabled(not busy)
         self.add.setEnabled(not busy and any(self.results.item(i,0) and self.results.item(i,0).checkState()==C.Qt.Checked
                                              for i in range(self.results.rowCount())))
         self.add_all.setEnabled(not busy and any(self.results.item(i,0) and self.results.item(i,0).flags() & C.Qt.ItemIsEnabled
@@ -275,7 +294,21 @@ class DailyDialog(W.QDialog):
         self.refresh()
 
     def refresh(self):
+        self.cast_state.setText('已启用 · 每次配音前自动预选' if self.c.meta('daily_cast_enabled')=='1' else '未启用 · 填好配置后点击保存')
         self.budget_pane.update_usage(self.c)
+        choices=[tuple(r) for r in self.c.db.execute('''SELECT
+            coalesce((SELECT speaker FROM lines WHERE speaker_id=d.speaker LIMIT 1),d.speaker),
+            coalesce(p.name,d.voice),d.delivery,d.evidence FROM daily_voice_choices d
+            LEFT JOIN breeze_presets p ON p.id=d.voice WHERE d.day=? ORDER BY 1''',
+            (datetime.now().date().isoformat(),))]
+        if choices!=getattr(self,'shown_cast',None):
+            self.shown_cast=choices
+            self.cast_today.setRowCount(len(choices))
+            for index,choice in enumerate(choices):
+                for column,text in enumerate(choice[:3]):
+                    item=W.QTableWidgetItem(text)
+                    item.setToolTip('判断依据 · '+choice[3])
+                    self.cast_today.setItem(index,column,item)
         rows=[tuple(r) for r in self.c.db.execute('SELECT scope,name,status FROM daily_plan WHERE account=? ORDER BY rowid',(self.account,))]
         if rows!=getattr(self,'shown',None):
             self.shown=rows
@@ -326,20 +359,14 @@ class DailyDialog(W.QDialog):
         self.start(lambda c:test_connection(base,model,key),self.feedback.setText,'正在验证密钥与模型访问权限…')
 
     def save_profile(self):
-        try:
-            enabled=self.ai.isChecked()
-            value=self.base.text().strip()
-            model=self.model.text().strip()
-            key=self.secret.text().strip()
-            if enabled or key:
-                value=endpoint(value)
-                if not model or (not key and not credential(value)):
-                    raise ValueError('请填写模型名称和该服务的 API Key')
-            if key:
-                credential(value,key)
-            save_meta(self.c,daily_cast_enabled='1' if enabled else '0',daily_cast_endpoint=value,daily_cast_model=model)
+        base,model,key=self.base.text(),self.model.text(),self.secret.text()
+        def saved(message):
             self.secret.clear()
-            self.feedback.setText('已保存角色分析设置')
-        except Exception as exc:
-            self.failed(str(exc))
+            self.feedback.setText(message)
+        self.start(lambda c:enable_casting(c,base,model,key),saved,'正在验证配置并启用每日选声…')
+
+    def disable_casting(self):
+        self.start(lambda c:save_meta(c,daily_cast_enabled='0'),
+                   lambda _:self.feedback.setText('每日选声已停用，已保存的配置可继续使用。'),
+                   '正在停用每日选声…')
 

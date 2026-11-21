@@ -8,6 +8,7 @@ from PySide6 import QtCore as C, QtWidgets as W
 import test_quest_library
 from test_wuwa_breeze import wav
 from wuwa_daily_cast import voice_for,endpoint
+from wuwa_daily_cast import CastingServiceError
 from wuwa_daily_plan import initialize,enqueue,run,save_meta,due_slot,today_units
 from wuwa_daily_scan import reduce_events,matched_lines
 from wuwa_daily_ui import DailyDialog
@@ -104,6 +105,92 @@ class DailyTests(unittest.TestCase):
         self.assertIsNone(due_slot(now,'09:00','',slot))
         self.assertIsNone(due_slot(now,'09:00','2026-11-19T06:00:00',''))
         self.assertEqual(matched_lines({'install_root':'X:/game','mounts':[]}),{})
+
+    def enable_two_speakers(self):
+        save_meta(self.c,daily_cast_enabled='1',daily_cast_endpoint='https://model.example/v1',daily_cast_model='demo')
+        with self.c.db:
+            self.c.db.execute("UPDATE lines SET speaker_id='11',speaker='新角色' WHERE id=?",(self.ids[1],))
+
+    @staticmethod
+    def cast_reply(base,model,speaker,dialogue,voices,requirements):
+        voice=next(v for v in voices if v['id']==requirements.get('voice_id','voc_second'))
+        return dict(gender=voice['gender'],age=voice['age'],personality='自然轻快',
+                    voice_id=voice['id'],evidence=[dialogue[0][1],speaker],confidence=.95)
+
+    def test_daily_cast_finishes_before_tts_and_directs_both_voices(self):
+        self.enable_two_speakers()
+        events=[]
+        def model(*args):
+            events.append('cast')
+            return self.cast_reply(*args)
+        def tts(*args):
+            events.append('tts')
+            self.assertIn('自然轻快',args[3])
+            return wav()
+        self.fetch.side_effect=tts
+        with patch('wuwa_daily_cast.infer',side_effect=model):
+            self.assertIn('补齐 2 句',run(self.c))
+            self.assertIn('补齐 0 句',run(self.c))
+        self.assertEqual(events,['cast','cast','tts','tts'])
+        self.assertEqual(self.c.binding('10')['voice'],'breeze:voc_demo')
+        self.assertEqual(self.c.binding('11')['voice'],'breeze:voc_second')
+        self.assertEqual(self.c.db.execute('SELECT count(*) FROM daily_voice_choices').fetchone()[0],2)
+
+    def test_failed_preflight_spends_no_tts_credits_and_retry_reuses_today(self):
+        self.enable_two_speakers()
+        def interrupted(*args):
+            if args[2]=='新角色':
+                raise CastingServiceError('角色分析服务 HTTP 401')
+            return self.cast_reply(*args)
+        with patch('wuwa_daily_cast.infer',side_effect=interrupted):
+            with self.assertRaisesRegex(CastingServiceError,'401'):
+                run(self.c)
+        self.fetch.assert_not_called()
+        self.assertEqual(today_units(self.c),0)
+        with patch('wuwa_daily_cast.infer',side_effect=self.cast_reply) as model:
+            self.assertIn('补齐 2 句',run(self.c))
+        self.assertEqual(model.call_count,1)
+
+    def test_exhausted_budget_and_unsettled_recipe_do_not_call_casting(self):
+        self.enable_two_speakers()
+        with self.c.db:
+            self.c.db.execute("INSERT INTO breeze_calls VALUES(?,date('now','localtime'),400,'submitted',NULL)",
+                              (breeze.recipe('你好，测试。','voc_demo'),))
+        with patch('wuwa_daily_cast.infer') as model:
+            self.assertIn('补齐 0 句',run(self.c))
+        model.assert_not_called()
+        self.fetch.assert_not_called()
+        self.assertEqual(today_units(self.c),400)
+
+    def test_save_button_alone_validates_and_enables_then_failed_edit_preserves_config(self):
+        app=W.QApplication.instance() or W.QApplication([])
+        with patch('wuwa_daily_ui.manage',return_value={'registered':False}), \
+             patch('wuwa_daily_cast.credential') as storage,patch('wuwa_daily_cast.test_connection',return_value='HTTP 200') as probe:
+            dialog=DailyDialog(self.c)
+            def wait():
+                if dialog.worker:
+                    dialog.worker.wait(5000)
+                    app.processEvents()
+            wait()
+            dialog.base.setText('https://model.example/v1')
+            dialog.model.setText('first')
+            dialog.secret.setText('example-test-value')
+            dialog.save_ai.click()
+            wait()
+            self.assertEqual(self.c.meta('daily_cast_enabled'),'1')
+            self.assertEqual(self.c.meta('daily_cast_model'),'first')
+            storage.assert_called_once_with('https://model.example/v1','example-test-value')
+            self.assertIn('已启用',dialog.feedback.text())
+            self.assertFalse(dialog.secret.text())
+            probe.side_effect=ValueError('HTTP 401')
+            dialog.model.setText('second')
+            dialog.secret.setText('example-other-value')
+            dialog.save_ai.click()
+            wait()
+            self.assertIn('401',dialog.feedback.text())
+            self.assertEqual(self.c.meta('daily_cast_model'),'first')
+            self.assertEqual(storage.call_count,1)
+            dialog.close()
 
     def test_dialog_scan_select_remove(self):
         app=W.QApplication.instance() or W.QApplication([])
