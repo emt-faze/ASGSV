@@ -33,15 +33,31 @@ def load_pack(root, *, allow_missing_audio=False):
     return result
 
 
-def _load_folder(folder, signature, allow_missing_audio):
+def installed_previews(root):
+    """Task library auditions use the signed, installed WAV even before game detection."""
+    from wuwa_update import quest_state, HASH
+    result = {}
+    for scope, state in quest_state(root).items():
+        if not HASH.fullmatch(state['folder']):
+            raise ValueError('任务配音快照编号无效')
+        folder = root / 'updates' / state['folder']
+        rows = _load_folder(folder, None, True, for_preview=True)
+        clips = {clip.catalog_id:(row, clip) for row, clip in rows.values()
+                 if row['quest'] == scope and clip.path.is_file()}
+        if clips:
+            result[scope] = state['revision'], clips
+    return result
+
+
+def _load_folder(folder, signature, allow_missing_audio, *, for_preview=False):
     manifest = folder / 'pack.json'
     if not manifest.is_file():
         return {}
     data = json.loads(manifest.read_text(encoding='utf8'))
-    if data['format'] != 1 or not signature:
+    if data['format'] != 1 or (not signature and not for_preview):
         return {}
     verified=None
-    if signature not in [data['mounts'], *data.get('additional_mounts', [])]:
+    if not for_preview and signature not in [data['mounts'], *data.get('additional_mounts', [])]:
         from wuwa_daily_scan import verified_index
         index=verified_index()
         if signature!=index['mounts']:

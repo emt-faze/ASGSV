@@ -73,3 +73,32 @@ class LibraryTests(unittest.TestCase):
         self.assertFalse(widget.preview.isEnabled())
         self.assertFalse(widget.generate.isEnabled())
         widget.close()
+
+    def test_download_precedence_cached_catalog_and_build_evidence(self):
+        app = W.QApplication.instance() or W.QApplication([])
+        widget = QuestLibrary(self.catalog)
+        self.addCleanup(widget.shutdown)
+        widget.loaded(read_library(self.root))
+        entry = dict(scope=self.scope, name=widget.quests[self.scope].name, lines=2,
+                     size=2*1024**2, revision=2, tested_builds=['a'*64])
+        widget.offers_loaded({self.scope:entry})
+        self.assertEqual(widget.generate.text(), '下载配音包 · 2.0 MiB')
+        widget.offers_failed('网络已断开')
+        widget.update_actions()
+        self.assertIn('使用上次配音目录', widget.package_status.text())
+        self.assertIn('尚无实机验证记录', widget.package_status.text())
+        widget.game_build = 'a'*64
+        widget.update_actions()
+        self.assertIn('当前版本实机验证通过', widget.package_status.text())
+        widget.offers_loaded({})
+        self.assertEqual(widget.generate.text(), '一键生成本任务配音')
+
+    def test_catalog_rejects_edits_to_published_evidence(self):
+        from pathlib import Path
+        from wuwa_quest_download import parse_catalog
+        raw = (Path(__file__).resolve().parents[1]/'quest-packs/catalog.json').read_bytes()
+        doc = json.loads(raw)
+        self.assertIn('quest:165750000', parse_catalog(raw))
+        doc['body']['quests'][0]['tested_builds'].append('b'*64)
+        with self.assertRaisesRegex(ValueError, '签名'):
+            parse_catalog(json.dumps(doc))

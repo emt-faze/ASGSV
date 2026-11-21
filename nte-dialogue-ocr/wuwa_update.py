@@ -197,7 +197,7 @@ def program_offer(feed,version):
     return max(candidates,key=lambda e:semver(e['version']),default=None)
 
 
-def download(install,feed,e,progress,*,source=None,stop=None):
+def download(install,feed,e,progress,*,source=None,stop=None,open_file=None):
     source=selected_source(install) if source is None else source
     directory=install/'.asgsv-update/downloads'
     directory.mkdir(parents=True,exist_ok=True)
@@ -216,7 +216,7 @@ def download(install,feed,e,progress,*,source=None,stop=None):
                     temp.unlink()
                     offset=0
                 headers={'Range':f'bytes={offset}-'} if offset else {}
-                with open_asset(source,e['asset'],tag=feed['tag'],headers=headers,timeout=45) as src:
+                with (open_file or open_asset)(source,e['asset'],tag=feed.get('tag'),headers=headers,timeout=45) as src:
                     if src.status!=206:
                         offset=0
                     elif not src.headers.get('Content-Range','').startswith(f'bytes {offset}-'):

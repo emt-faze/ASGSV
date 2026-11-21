@@ -3,6 +3,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+from threading import Event
+from time import monotonic
 
 from PySide6 import QtCore as C, QtGui as G, QtWidgets as W
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -12,7 +14,10 @@ from wuwa_catalog import Catalog, resolve_text
 from wuwa_breeze import strip_asides
 from wuwa_log_generation import existing_audio
 from wuwa_surface import AccentButton
-from wuwa_voice_pack import load_pack, pack_matches
+from wuwa_voice_pack import installed_previews, load_pack, pack_matches
+import wuwa_quest_download as quest_download
+import wuwa_update as update
+from wuwa_update_ui import Operation
 from wuwa_account_ui import GameAccountButton
 
 
@@ -95,7 +100,7 @@ class IndexReader(C.QThread):
 
     def run(self):
         try:
-            self.loaded.emit(read_library(self.root))
+            self.loaded.emit((read_library(self.root), installed_previews(self.root), quest_download.build_id(self.root)))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -284,9 +289,18 @@ class QuestLibrary(W.QWidget):
         dialog.deleteLater()
         self.reload()
 
-    def __init__(self, catalog, parent=None):
+    def __init__(self, catalog, parent=None, *, install_root=None):
         super().__init__(parent)
         self.catalog = catalog
+        self.install_root = install_root or Path(__file__).resolve().parents[1]
+        self.local_quests = {}
+        self.offers = {}
+        self.installed = {}
+        self.game_build = ''
+        self.offer_worker = self.pack_worker = None
+        self.offer_source = None
+        self.last_check = 0
+        self.download_stop = Event()
         self.quests, self.audio, self.packed = {}, {}, {}
         self.rows = []
         self.scope = None
@@ -300,7 +314,7 @@ class QuestLibrary(W.QWidget):
         self.catalog_poll.setInterval(1800)
         self.catalog_poll.timeout.connect(self.check_catalog)
         self.reader = IndexReader(catalog.root, self)
-        self.reader.loaded.connect(self.loaded)
+        self.reader.loaded.connect(self.loaded_view)
         self.reader.failed.connect(self.index_failed)
         self.reader.finished.connect(self.scan_finished)
         self.player = QMediaPlayer(self)
@@ -374,6 +388,17 @@ class QuestLibrary(W.QWidget):
         self.summary = W.QLabel()
         self.summary.setObjectName('subtle')
         detail.addWidget(self.summary)
+        package_info = W.QHBoxLayout()
+        self.package_status = W.QLabel()
+        self.package_status.setWordWrap(True)
+        self.package_status.setTextFormat(C.Qt.PlainText)
+        package_info.addWidget(self.package_status, 1)
+        self.retry_catalog = W.QPushButton('重试配音目录')
+        self.retry_catalog.clicked.connect(lambda: self.check_offers(force=True))
+        self.retry_catalog.hide()
+        package_info.addWidget(self.retry_catalog)
+        detail.addLayout(package_info)
+        self.catalog_error = ''
         self.work_note=W.QLabel()
         self.work_note.setWordWrap(True)
         self.work_note.hide()
@@ -382,7 +407,7 @@ class QuestLibrary(W.QWidget):
         actions = W.QHBoxLayout()
         self.generate = W.QPushButton('一键生成本任务配音')
         self.generate.setObjectName('primary')
-        self.generate.clicked.connect(self.generate_current)
+        self.generate.clicked.connect(self.primary_action)
         self.preview = AccentButton('试听当前句', 'play')
         self.preview.clicked.connect(self.preview_current)
         actions.addWidget(self.generate)
@@ -426,7 +451,13 @@ class QuestLibrary(W.QWidget):
 
     def check_catalog(self):
         self.account_button.sync()
-        revision=(self.catalog.progress.selection,self.catalog.meta('daily_scan_revision'),self.catalog.meta('daily_updated'))
+        inventory = self.catalog.root / 'sources/local-inventory.json'
+        try:
+            inventory_stamp = inventory.stat().st_mtime_ns
+        except FileNotFoundError:
+            inventory_stamp = None
+        revision=(self.catalog.progress.selection,self.catalog.meta('daily_scan_revision'),
+                  self.catalog.meta('daily_updated'),inventory_stamp)
         if revision!=self.revision:
             self.revision=revision
             self.reload()
@@ -434,6 +465,7 @@ class QuestLibrary(W.QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self.account_button.detect_single()
+        self.check_offers()
         self.catalog_poll.start()
         self.check_catalog()
         self.reload()
@@ -447,7 +479,125 @@ class QuestLibrary(W.QWidget):
         self.closing = True
         self.catalog_poll.stop()
         self.player.stop()
+        self.download_stop.set()
+        for worker in (self.offer_worker, self.pack_worker):
+            if worker is not None:
+                worker.wait()
         self.reader.wait()
+
+    def check_offers(self, force=False):
+        source = update.selected_source(self.install_root)
+        if self.closing or self.offer_worker is not None:
+            return
+        if not force and source == self.offer_source and monotonic() - self.last_check < 600:
+            return
+        self.offer_source = source
+        self.last_check = monotonic()
+        self.catalog_error = ''
+        self.retry_catalog.hide()
+        cached = quest_download.catalog_file(self.catalog.root)
+        if not self.offers and cached.is_file():
+            try:
+                self.offers = quest_download.parse_catalog(cached.read_bytes())
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                self.catalog_error = '缓存目录无效 · ' + str(exc)
+        root = self.catalog.root
+        worker = Operation(lambda _: quest_download.fetch_catalog(root, source), self)
+        self.offer_worker = worker
+        worker.result.connect(self.offers_loaded)
+        worker.failed.connect(self.offers_failed)
+        worker.finished.connect(self.offers_finished)
+        self.merge_offers()
+        self.render()
+        worker.start()
+
+    def offers_loaded(self, offers):
+        if not self.closing:
+            self.catalog_error = ''
+            if offers != self.offers:
+                self.offers = offers
+                self.merge_offers()
+                self.render()
+
+    def offers_failed(self, error):
+        if not self.closing:
+            self.catalog_error = ('使用上次配音目录' if self.offers else '成品目录暂不可用') + ' · ' + error
+            self.retry_catalog.show()
+
+    def offers_finished(self):
+        self.offer_worker.deleteLater()
+        self.offer_worker = None
+        if not self.closing:
+            self.update_actions()
+            if self.isVisible() and self.offer_source != update.selected_source(self.install_root):
+                self.check_offers()
+
+    def merge_offers(self):
+        self.quests = dict(self.local_quests)
+        for scope, (_, clips) in self.installed.items():
+            first = next(iter(clips.values()))[0]
+            self.quests.setdefault(scope, Quest(first['quest_name']))
+        for scope, offer in self.offers.items():
+            self.quests.setdefault(scope, Quest(offer['name']))
+
+    def loaded_view(self, result):
+        if self.closing or self.reader_selection != self.catalog.progress.selection:
+            self.reload_pending = True
+            return
+        library, self.installed, self.game_build = result
+        self.loaded(library)
+
+    def local_complete(self, scope):
+        q = self.quests[scope]
+        if q.complete or scope not in self.installed:
+            return q.complete
+        revision, clips = self.installed[scope]
+        offer = self.offers.get(scope)
+        if offer and revision == offer['revision']:
+            return len(clips) == offer['lines']
+        return all(i in clips or i in self.audio for i in q.ids)
+
+    def available_offer(self):
+        offer = self.offers.get(self.scope)
+        if offer and self.installed.get(self.scope, (0, {}))[0] < offer['revision']:
+            return offer
+        return None
+
+    def primary_action(self):
+        offer = self.available_offer()
+        if not offer:
+            self.generate_current()
+            return
+        if self.pack_worker is not None or self.busy:
+            return
+        scope, root = self.scope, self.catalog.root
+        source = update.selected_source(self.install_root)
+        worker = Operation(lambda progress: quest_download.install_offer(
+            self.install_root, root, offer, source, self.download_stop, progress), self)
+        self.pack_worker = worker
+        self.download_scope = scope
+        self.download_stop.clear()
+        self.set_work_status('正在下载 · ' + offer['name'])
+        worker.message.connect(self.set_work_status)
+        worker.failed.connect(self.set_work_status)
+        worker.result.connect(self.pack_installed)
+        worker.finished.connect(self.pack_finished)
+        self.update_actions()
+        worker.start()
+
+    def pack_installed(self, message):
+        if self.closing:
+            return
+        if self.scope == self.download_scope:
+            self.requested_scope = self.scope
+        self.set_work_status(message + ' · 可选中台词试听')
+        self.reload()
+
+    def pack_finished(self):
+        self.pack_worker.deleteLater()
+        self.pack_worker = None
+        if not self.closing:
+            self.update_actions()
 
     def set_work_status(self,text):
         self.work_note.setText(text)
@@ -494,8 +644,10 @@ class QuestLibrary(W.QWidget):
     def index_failed(self, message):
         if self.closing:
             return
-        self.quests, self.audio, self.packed = {}, {}, {}
+        self.local_quests, self.audio, self.packed = {}, {}, {}
+        self.merge_offers()
         self.render()
+        self.set_work_status('本地任务库读取失败 · ' + message)
         self.notice.emit('任务库读取失败 · ' + message)
 
     def loaded(self, result):
@@ -504,7 +656,8 @@ class QuestLibrary(W.QWidget):
         if getattr(self,'reader_selection',self.catalog.progress.selection) != self.catalog.progress.selection:
             self.reload_pending=True
             return
-        self.quests, self.audio, self.packed = result
+        self.local_quests, self.audio, self.packed = result
+        self.merge_offers()
         if self.requested_scope and self.requested_scope not in self.quests:
             self.requested_scope = None
             self.notice.emit('该任务没有可列出的预配音台词')
@@ -521,7 +674,7 @@ class QuestLibrary(W.QWidget):
         self.scope = scope
         if not self.quests[scope].evidence:
             self.discovered_only.setChecked(False)
-        self.pills[int(self.quests[scope].complete)].setChecked(True)
+        self.pills[int(self.local_complete(scope))].setChecked(True)
         with C.QSignalBlocker(self.search):
             self.search.clear()
         self.render(locate=True)
@@ -537,10 +690,10 @@ class QuestLibrary(W.QWidget):
     def render(self, locate=False):
         text = self.search.text().strip().casefold()
         visible = [(sid,q) for sid,q in self.quests.items() if text in q.name.casefold() and (not self.discovered_only.isChecked() or q.evidence)]
-        counts = Counter(q.complete for _,q in visible)
+        counts = Counter(self.local_complete(sid) for sid,q in visible)
         for i, label in enumerate(('未配音任务','已配音任务')):
             self.pills[i].setText(f'{label} ({counts[bool(i)]})')
-        scopes = [scope for scope,quest in visible if quest.complete == self.pills[1].isChecked()]
+        scopes = [scope for scope,quest in visible if self.local_complete(scope) == self.pills[1].isChecked()]
         pages = (len(scopes) + self.page_size - 1) // self.page_size
         if locate and self.scope in scopes:
             self.page_number = scopes.index(self.scope) // self.page_size
@@ -559,8 +712,9 @@ class QuestLibrary(W.QWidget):
                 name.setData(C.Qt.UserRole, sid)
                 name.setToolTip(q.name+((" · "+q.evidence) if q.evidence else ""))
                 self.tasks.setItem(i,0,name)
-                self.tasks.setItem(i,1,W.QTableWidgetItem(str(len(q.ids))))
-                status = '已配音' if q.complete else '未配音'
+                count = len(q.ids) or self.offers.get(sid, {}).get('lines') or len(self.installed.get(sid,(0,{}))[1])
+                self.tasks.setItem(i,1,W.QTableWidgetItem(str(count)))
+                status = '已配音' if self.local_complete(sid) else '有成品包' if sid in self.offers else '未配音'
                 self.tasks.setItem(i,2,W.QTableWidgetItem(''))
                 self.tasks.item(i,2).setData(C.Qt.AccessibleTextRole,status)
                 container = W.QWidget()
@@ -569,7 +723,7 @@ class QuestLibrary(W.QWidget):
                 row.setContentsMargins(4,0,4,0)
                 badge = W.QLabel(status)
                 badge.setObjectName('questStatus')
-                badge.setProperty('ready', q.complete)
+                badge.setProperty('ready', self.local_complete(sid))
                 row.addWidget(badge,0,C.Qt.AlignLeft | C.Qt.AlignVCenter)
                 self.tasks.setCellWidget(i,2,container)
             if page:
@@ -581,11 +735,15 @@ class QuestLibrary(W.QWidget):
         sid = item.data(C.Qt.UserRole) if item else None
         old_row = self.lines.currentRow()
         previous = self.rows[old_row]['id'] if sid == self.scope and 0 <= old_row < len(self.rows) else None
+        if sid != self.scope:
+            self.player.stop()
         self.scope = sid
         ids = self.quests[sid].ids if sid else []
         indexed = {r['id']:r for r in self.catalog.lines([sid])} if sid else {}
         self.rows = [indexed.get(i) or self.packed[i] for i in ids if i in indexed or i in self.packed]
-        self.player.stop()
+        self.pack_clips = self.installed.get(sid,(0,{}))[1]
+        listed = {r['id'] for r in self.rows}
+        self.rows.extend(entry for i,(entry,_) in self.pack_clips.items() if i not in listed)
         cfg = json.loads((self.catalog.root/'config.json').read_text(encoding='utf8'))
         with C.QSignalBlocker(self.lines):
             self.lines.setRowCount(len(self.rows))
@@ -595,7 +753,8 @@ class QuestLibrary(W.QWidget):
                     body, _ = resolve_text(r['raw_text'],cfg.get('nickname','漂泊者'),cfg.get('traveler_gender','female'))
                 else:
                     body = r['text']
-                for col,text in enumerate((r['speaker'],body,'已生成' if r['id'] in self.audio else '未生成')):
+                state = '已生成' if r['id'] in self.audio else '成品录音' if r['id'] in self.pack_clips else '未生成'
+                for col,text in enumerate((r['speaker'],body,state)):
                     cell = W.QTableWidgetItem(text)
                     cell.setToolTip('切换角色音色 · '+text if col==0 else text)
                     if col==0:
@@ -610,10 +769,39 @@ class QuestLibrary(W.QWidget):
     def update_actions(self, *_):
         q = self.quests.get(self.scope)
         row = self.lines.currentRow()
-        self.summary.setText(f'共 {len(q.ids)} 句 · 已生成 {q.ready} 句' if q else
+        offer = self.offers.get(self.scope)
+        download = self.available_offer()
+        clips = self.installed.get(self.scope,(0,{}))[1]
+        ready = len(set(clips).union(i for i in q.ids if i in self.audio)) if q else 0
+        total = len(set(q.ids).union(clips)) if q else 0
+        total = total or (offer['lines'] if offer else 0)
+        self.summary.setText(f'共 {total} 句 · 本地就绪 {ready} 句' if q else
                              '正在读取本地录音…' if self.reader.isRunning() else '没有匹配的任务')
-        self.generate.setEnabled(bool(q and q.ids and not q.complete and not self.busy and not self.reader.isRunning()))
-        self.preview.setEnabled(bool(not self.reader.isRunning() and 0 <= row < len(self.rows) and self.rows[row]['id'] in self.audio))
+        info = []
+        if offer:
+            info.append(f"成品已配齐 {offer['lines']} 句")
+            info.append('当前版本实机验证通过' if self.game_build in offer['tested_builds'] else '当前版本尚无实机验证记录')
+        if self.catalog_error:
+            info.append(self.catalog_error)
+        elif self.offer_worker is not None and not self.offers:
+            info.append('正在检查成品配音目录…')
+        self.package_status.setText(' · '.join(info))
+        self.package_status.setVisible(bool(info))
+        fetching = self.pack_worker is not None
+        if fetching and self.download_scope == self.scope:
+            label = '正在下载配音包…'
+        elif download:
+            label = f"下载配音包 · {download['size']/1048576:.1f} MiB"
+        elif clips and (not q or not q.ids or q.complete):
+            label = '配音包已安装'
+        else:
+            label = '一键生成本任务配音'
+        self.generate.setText(label)
+        self.generate.setEnabled(bool((download or (q and q.ids and not q.complete))
+            and not self.busy and not fetching and not self.reader.isRunning()
+            and (self.offer_worker is None or download)))
+        self.preview.setEnabled(bool(not self.reader.isRunning() and 0 <= row < len(self.rows)
+            and (self.rows[row]['id'] in self.audio or self.rows[row]['id'] in clips)))
 
     def generate_current(self):
         q = self.quests.get(self.scope)
@@ -626,6 +814,8 @@ class QuestLibrary(W.QWidget):
         if not 0 <= row < len(self.rows):
             return
         clip = self.audio.get(self.rows[row]['id'])
+        if clip is None and self.rows[row]['id'] in self.pack_clips:
+            clip = self.pack_clips[self.rows[row]['id']][1]
         if not clip:
             return
         if not clip.path.is_file() or file_digest(clip.path) != clip.sha256:
