@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 from zipfile import ZipFile, ZIP_DEFLATED
 
@@ -58,6 +59,8 @@ def build(args):
     from build_generator_release import source_files
     import wuwa_update as updater
     version = (ROOT/'nte-dialogue-ocr/GENERATOR_VERSION').read_text().strip()
+    from wuwa_claim_components import DIRECTORY, verified_wheels
+    wheels = verified_wheels(args.claim_wheels)
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
     if not args.base_sha or checksum(args.base) != args.base_sha:
@@ -92,29 +95,56 @@ def build(args):
         with ZipFile(portable.with_suffix('.partial'), 'w', ZIP_DEFLATED, compresslevel=4) as z:
             for item in old.infolist():
                 name = item.filename.removeprefix('ASGSV/')
+                if name.startswith(DIRECTORY + '/'):
+                    manifest['files'].pop(name, None)
+                    continue
                 if name in changes or name == 'FILE_MANIFEST.json':
                     continue
                 z.writestr(copy(item), old.read(item))
+            for wheel in wheels:
+                relative = DIRECTORY + '/' + wheel.name
+                z.write(wheel, 'ASGSV/' + relative)
+                manifest['files'][relative] = checksum(wheel)
             for n,b in changes.items():
                 z.writestr('ASGSV/'+n,b)
             z.writestr('ASGSV/FILE_MANIFEST.json', json.dumps(manifest,ensure_ascii=False,indent=2).encode())
         portable.with_suffix('.partial').replace(portable)
         listing = [program]
-        meta = json.loads(old.read('ASGSV/game-data/wuwa/voice-pack/pack.json'))
-        for quest in sorted({r['quest'] for r in meta['lines']}):
-            rows = [r for r in meta['lines'] if r['quest']==quest]
-            payload = {'pack.json': json.dumps(dict(meta, lines=rows),ensure_ascii=False).encode()}
-            for r in rows:
-                n = 'audio/'+r['sha256']+'.wav'
-                if n not in payload:
-                    payload[n] = old.read('ASGSV/game-data/wuwa/voice-pack/'+n)
-            listing.append(package(out, quest.replace(':','-')+'-r'+str(args.revision)+'.zip',
-                                   dict(kind='quest',name=rows[0]['quest_name'],scope=quest,
-                                        revision=args.revision, minimum=version),payload))
+        if not args.previous_release:
+            add_resources(out, listing, old, args, version)
+    if args.previous_release:
+        previous = updater.signed_body((args.previous_release / 'wuwa-updates.json').read_bytes())
+        if previous['tag'] != 'wuwa-v' + base:
+            raise ValueError('Published feed does not match the portable baseline')
+        for item in previous['packages']:
+            path = args.previous_release / item['asset']
+            if path.name != item['asset'] or path.stat().st_size != item['size'] or checksum(path) != item['sha256']:
+                raise ValueError('Previous release asset differs from its signed feed')
+            shutil.copyfile(path, out / path.name)
+            listing.append(item)
+    finish_release(out, listing, portable, version)
+    print(f'{len(changes)} changed program files; {len(listing)} signed packages')
+
+
+def add_resources(out, listing, old, args, version):
+    meta = json.loads(old.read('ASGSV/game-data/wuwa/voice-pack/pack.json'))
+    for quest in sorted({r['quest'] for r in meta['lines']}):
+        rows = [r for r in meta['lines'] if r['quest']==quest]
+        payload = {'pack.json': json.dumps(dict(meta, lines=rows),ensure_ascii=False).encode()}
+        for r in rows:
+            n = 'audio/'+r['sha256']+'.wav'
+            if n not in payload:
+                payload[n] = old.read('ASGSV/game-data/wuwa/voice-pack/'+n)
+        listing.append(package(out, quest.replace(':','-')+'-r'+str(args.revision)+'.zip',
+                               dict(kind='quest',name=rows[0]['quest_name'],scope=quest,
+                                    revision=args.revision, minimum=version),payload))
     from wuwa_resources import TABLES
     index = {s+'.json':(args.index/(s+'.json')).read_bytes() for s in [*TABLES,'source']}
     listing.append(package(out,'wuwa-index-r'+str(args.revision)+'.zip',
                            dict(kind='index',name='中文台词索引',revision=args.revision,minimum=version),index))
+
+
+def finish_release(out, listing, portable, version):
     # The .17 bootstrap runs in a separate folder and does not overwrite program files.
     bootstrap = out/'ASGSV-Update-Assistant.zip'
     with ZipFile(bootstrap,'w',ZIP_DEFLATED) as z:
@@ -126,7 +156,6 @@ def build(args):
     (out/'wuwa-updates.json').write_bytes(signed(dict(schema=1,tag=tag,packages=listing)))
     paths = [portable, bootstrap, out/'wuwa-updates.json', *(out/e['asset'] for e in listing)]
     (out/'SHA256SUMS.txt').write_text(''.join(f'{checksum(p)}  {p.name}\n' for p in paths), encoding='ascii')
-    print(f'{len(changes)} changed program files; {len(listing)} signed packages')
 
 
 if __name__ == '__main__':
@@ -136,6 +165,8 @@ if __name__ == '__main__':
     parser.add_argument('--base-sha')
     parser.add_argument('--index',type=Path)
     parser.add_argument('--out',type=Path)
+    parser.add_argument('--claim-wheels',type=Path)
+    parser.add_argument('--previous-release',type=Path, help='Reuse signed resources and preserve earlier upgrade paths')
     parser.add_argument('--revision',type=int,default=1)
     args = parser.parse_args()
     if args.init_key:

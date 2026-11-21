@@ -8,9 +8,20 @@ import subprocess
 import sys
 
 
-def task_name(root):
+def task_name(root, kind='dubbing'):
+    prefixes = {'dubbing': 'ASGSV-Daily-Dubbing-', 'claim': 'ASGSV-BreezeBlue-Claim-'}
     suffix = hashlib.sha256(str(Path(root).resolve()).casefold().encode()).hexdigest()[:12]
-    return 'ASGSV-Daily-Dubbing-' + suffix
+    if kind == 'claim':
+        import win32api
+        import win32con
+        import win32security
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        try:
+            sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+            suffix += '-' + win32security.ConvertSidToStringSid(sid)
+        finally:
+            token.Close()
+    return prefixes[kind] + suffix
 
 
 def python_path():
@@ -24,14 +35,15 @@ def python_path():
     return current
 
 
-def manage(root, action, at='09:00'):
+def manage(root, action, at='09:00', *, kind='dubbing'):
     if os.name!='nt':
         raise ValueError('每日后台执行需要 Windows 任务计划程序。')
     if action not in ('register','remove','query') or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',at):
         raise ValueError('无效的调度操作或执行时间。')
     work = Path(__file__).resolve().parent
-    args = subprocess.list2cmdline(['-X','utf8',str(work/'wuwa_daily_plan.py'),'--root',str(Path(root).resolve()),'--scheduled'])
-    environ = dict(os.environ, ASGSV_TASK=task_name(root), ASGSV_EXE=str(python_path()), ASGSV_ARGS=args,
+    worker = {'dubbing': 'wuwa_daily_plan.py', 'claim': 'wuwa_daily_claim.py'}[kind]
+    args = subprocess.list2cmdline(['-X','utf8',str(work/worker),'--root',str(Path(root).resolve()),'--scheduled'])
+    environ = dict(os.environ, ASGSV_TASK=task_name(root, kind), ASGSV_EXE=str(python_path()), ASGSV_ARGS=args,
                    ASGSV_WORK=str(work), ASGSV_AT=at, ASGSV_ACTION=action)
     code = r'''
 $ErrorActionPreference='Stop'
@@ -53,7 +65,9 @@ if ($task -and $env:ASGSV_ACTION -eq 'remove') {
 }
 if ($task) {
   $info=Get-ScheduledTaskInfo -InputObject $task
-  @{registered=$true;state=[string]$task.State;next=$info.NextRunTime.ToString('yyyy-MM-dd HH:mm')} | ConvertTo-Json -Compress
+  $daily=$task.Triggers | Where-Object { $_.DaysInterval -eq 1 } | Select-Object -First 1
+  $clock=if ($daily) { ([DateTime]::Parse($daily.StartBoundary)).ToString('HH:mm') } else { '' }
+  @{registered=$true;time=$clock;state=[string]$task.State;next=$info.NextRunTime.ToString('yyyy-MM-dd HH:mm')} | ConvertTo-Json -Compress
 } else { '{"registered":false}' }
 '''
     powershell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'

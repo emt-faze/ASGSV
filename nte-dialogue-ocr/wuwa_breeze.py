@@ -22,7 +22,7 @@ CREDENTIAL = 'ASGSV/BreezeBlue/API'
 MAX_BYTES = 32 * 1024 * 1024
 
 
-def api_key():
+def api_key(*, allow_environment=True):
     import win32cred
     import pywintypes
     try:
@@ -34,7 +34,7 @@ def api_key():
     except pywintypes.error as exc:
         if exc.winerror != 1168:
             raise ValueError('无法读取 Windows 中保存的 BreezeBlue 密钥') from None
-    return os.environ.get('BREEZE_API_KEY','').strip()
+    return os.environ.get('BREEZE_API_KEY','').strip() if allow_environment else ''
 
 
 def save_key(key):

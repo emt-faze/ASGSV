@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -51,6 +52,13 @@ def build(args):
         subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                         str(root / 'scripts/install_generator.ps1'), '-DependenciesOnly'], check=True)
         python = root / 'runtime/python/python.exe'
+        sys.path.insert(0, str(ROOT / 'nte-dialogue-ocr'))
+        from wuwa_claim_components import DIRECTORY, fetch_wheels, verified_wheels
+        if args.claim_wheels:
+            for wheel in verified_wheels(args.claim_wheels):
+                copy(wheel, root / DIRECTORY / wheel.name)
+        else:
+            fetch_wheels(python, root / DIRECTORY)
         python_version = subprocess.check_output(
             [str(python), '-I', '-c', "import platform; print(platform.python_version())"], text=True
         ).strip()
@@ -81,4 +89,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('output', 'models-dir', 'voice-pack'):
         parser.add_argument('--' + name, required=True, type=Path)
+    parser.add_argument('--claim-wheels', type=Path, help='Verified offline wheels for daily credits')
     print(build(parser.parse_args()))

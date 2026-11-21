@@ -8,6 +8,7 @@ from wuwa_daily_cast import DEFAULT_BASE, DEFAULT_MODEL, test_connection
 from wuwa_daily_plan import record_scan
 from wuwa_plan_controls import BudgetPane, PLAN_STYLE
 from wuwa_daily_scheduler import manage
+from wuwa_claim_ui import ClaimPane
 import wuwa_breeze as breeze
 
 
@@ -142,6 +143,8 @@ class DailyDialog(W.QDialog):
         self.cast_today.setMinimumHeight(90)
         form.addRow('今日选声',self.cast_today)
         self.tabs.addTab(ai,'角色分析')
+        self.claim_pane = ClaimPane(self)
+        self.tabs.addTab(self.claim_pane, '每日领积分')
         self.feedback=W.QLabel()
         self.feedback.setWordWrap(True)
         self.feedback.setTextInteractionFlags(C.Qt.TextSelectableByMouse)
@@ -161,7 +164,14 @@ class DailyDialog(W.QDialog):
         self.poll.setInterval(2500)
         self.poll.timeout.connect(self.refresh)
         self.refresh()
-        self.start(lambda c:manage(c.root,'query'),self.show_schedule,'正在检查后台计划…')
+        def schedules(c):
+            return manage(c.root, 'query'), manage(c.root, 'query', kind='claim')
+
+        def loaded(states):
+            self.show_schedule(states[0])
+            self.claim_pane.show_schedule(states[1])
+
+        self.start(schedules, loaded, '正在检查后台计划…')
 
     def showEvent(self,event):
         super().showEvent(event)
@@ -197,6 +207,8 @@ class DailyDialog(W.QDialog):
         self.feedback.setText('需要处理 · '+msg)
         if self.schedule_info.text().startswith('正在'):
             self.schedule_info.setText('无法读取系统状态')
+        if self.claim_pane.schedule_state.text().startswith('正在'):
+            self.claim_pane.schedule_state.setText('无法读取系统计划 · ' + msg)
 
     def finished_job(self):
         self.worker.deleteLater()
@@ -255,6 +267,7 @@ class DailyDialog(W.QDialog):
 
     def selection(self):
         busy=bool(self.worker)
+        self.claim_pane.refresh(busy)
         self.disable_ai.setEnabled(not busy and self.c.meta('daily_cast_enabled')=='1')
         for b in (self.detect_button,self.index_button,self.enable,self.disable,self.save_ai,self.verify,self.budget_pane.save):
             b.setEnabled(not busy)
