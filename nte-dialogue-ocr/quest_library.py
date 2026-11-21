@@ -56,7 +56,7 @@ def read_library(root):
         discovered={scope:(name,reason) for scope,name,reason in catalog.db.execute(
             'SELECT scope,name,evidence FROM daily_discovered WHERE account=?',(account,))}
         manifest=root/'sources/local-inventory.json'
-        verified=matched_lines(json.loads(manifest.read_text(encoding='utf8'))) if discovered and manifest.is_file() else {}
+        verified=matched_lines(json.loads(manifest.read_text(encoding='utf8')), catalog, discovered) if discovered and manifest.is_file() else {}
         quests = {}
         for scope, name, identity, text in catalog.db.execute(
             """SELECT s.id,s.name,l.id,l.raw_text FROM scopes s JOIN scope_lines sl ON sl.scope_id=s.id
@@ -164,8 +164,8 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
             return '当前任务无需新增录音'
         version = catalog.local_version()
         direct, single_lines, eligible = set(), [], []
-        if catalog.progress.account or (Path(config['install_root']) / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db').is_file():
-            catalog.progress.refresh(config['install_root'])
+        if catalog.progress.refresh_for_preparation(config['install_root'], require_progress=discovered_only) is None:
+            progress('本机暂无进度记录，按手动选择的任务核对台词与声线')
         if selection is None:
             selection = catalog.progress.selection
         catalog.progress.require(selection)
@@ -178,12 +178,11 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
                                 (selection[0],scope)).fetchone()
         if discovered_only and not seen:
             raise ValueError('当前任务不在所选账号的扫描结果中，请重新选择任务。')
-        confirmed={}
-        if seen:
+        confirmed=matched_lines(mounted,catalog,[scope]).get(scope,{})
+        if discovered_only:
             active_account, latest = scan(catalog,config)
             if active_account!=selection[0] or scope not in {s for s,_,_ in latest}:
                 raise ValueError('当前账号或任务进度已变化，请重新扫描支线')
-            confirmed=matched_lines(mounted).get(scope,{})
             if not confirmed:
                 raise ValueError('当前游戏版本的任务指纹尚未覆盖本任务')
         blocked=Counter()
@@ -192,7 +191,7 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
             if row['id'] not in pending:
                 continue
             known=confirmed.get(row['id'])==row['fingerprint']
-            if seen and not known:
+            if discovered_only and not known:
                 blocked['游戏台词指纹未匹配']+=1
                 continue
             if known and catalog.voice_basis(row,version,allow_branch=catalog.branch_rule_enabled()):
@@ -205,7 +204,7 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
             elif catalog.voice_basis(row, version, allow_branch=catalog.branch_rule_enabled()):
                 single_lines.append(row)
             else:
-                blocked['原声或资源版本未核实']+=1
+                blocked[getattr(catalog,'branch_policy_error','') or '原声或资源版本未核实']+=1
                 continue
             eligible.append(row)
 
@@ -619,7 +618,7 @@ class QuestLibrary(W.QWidget):
     def generate_current(self):
         q = self.quests.get(self.scope)
         scope = self.scope
-        if q and self.generate.isEnabled() and self.account_button.ensure(allow_missing=True):
+        if q and self.generate.isEnabled() and self.account_button.ensure(allow_missing=not self.discovered_only.isChecked()):
             self.generate_requested.emit(scope, [i for i in q.ids if i not in self.audio])
 
     def preview_current(self):

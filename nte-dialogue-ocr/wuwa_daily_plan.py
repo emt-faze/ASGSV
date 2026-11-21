@@ -8,12 +8,11 @@ from threading import Event, Lock
 from time import monotonic
 
 from PySide6.QtCore import QLockFile
-from dialogue_generation import file_digest
 from wuwa_catalog import Catalog, resolve_text
 from wuwa_daily_scan import scan, matched_lines
 from wuwa_daily_cast import voice_for
 from wuwa_daily_precast import DailyCasting
-from wuwa_resources import inventory
+from wuwa_resources import inventory, resource_snapshot_current
 from wuwa_log_generation import export_cloud
 import wuwa_breeze as breeze
 
@@ -152,9 +151,9 @@ def _run(c, scheduled, dry, selected):
         checkpoint('当前账号的计划为空')
         return '当前账号的计划为空'
     inv = inventory(cfg['install_root'], c.root)
-    verified = matched_lines(inv)
-    if not verified:
-        raise ValueError('当前游戏挂载版本尚无匹配的支线指纹，更新工作台的任务索引包后重试。')
+    if not (inv['mounts'] or inv['base_paks']):
+        raise ValueError('所选目录没有鸣潮资源包，请在设置中重新探测游戏目录。')
+    verified = matched_lines(inv, c, [scope for scope, _ in queued])
     if not c.cloud_only():
         raise ValueError('请在每日计划的「配音与预算」中将配音引擎切换为 BreezeBlue。')
     if not c.branch_rule_enabled():
@@ -215,13 +214,16 @@ def _run(c, scheduled, dry, selected):
             continue
         rows = c.lines([scope])
         approved = verified.get(scope,{})
-        pending = [r for r in rows if r['id'] in approved and r['id'] not in audio]
-        ready = sum(i in audio for i in approved)
+        ready_ids = {r['id'] for r in rows if r['id'] in audio and
+                     approved.get(r['id']) == r['fingerprint']}
+        pending = [r for r in rows if r['id'] in approved and r['id'] not in ready_ids]
+        ready = len(ready_ids)
         if not approved:
-            status(scope,'该任务在当前资源中没有可配音台词')
+            deferred = True
+            status(scope,'任务台词与已验证索引未匹配，请检查台词索引更新')
             continue
         counts = Counter()
-        missing = len(approved.keys() - {r['id'] for r in rows} - audio.keys())
+        missing = len(approved.keys() - {r['id'] for r in rows})
         if missing:
             counts['台词索引尚未覆盖'] = missing
         # Bind a character once, then reuse that decision for all of their lines.
@@ -243,7 +245,7 @@ def _run(c, scheduled, dry, selected):
                 return '日期已切换，下次运行继续'
             identity,sid = row['id'],row['speaker_id']
             if row['fingerprint']!=approved[identity] or not c.voice_basis(row,version,allow_branch=True):
-                counts['原声或版本待核实'] += 1
+                counts[getattr(c,'branch_policy_error','') or '原声或版本待核实'] += 1
                 continue
             body, unresolved = resolve_text(row['raw_text'], cfg.get('nickname','漂泊者'), cfg.get('traveler_gender','female'))
             spoken = breeze.spoken_text(body,c.root)
@@ -291,7 +293,7 @@ def _run(c, scheduled, dry, selected):
                         binding = c.binding(sid)
                         return (enrolled(scope) and (not scheduled or c.meta('daily_enabled')=='1')
                             and date.today().isoformat()==today and binding and binding['voice']==entry.voice
-                            and all(file_digest(m['path'])==m['sha256'] for m in inv['mounts']))
+                            and resource_snapshot_current(inv))
                     clip = export_cloud(c,project,entry,vid,current,Event(),Lock(),max_daily_credits=400)
                 finally:
                     project_guard.unlock()

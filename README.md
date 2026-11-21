@@ -2,7 +2,7 @@
 
 ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对白补上配音。它通过游戏日志定位当前台词。翻页时会停止上一句，迟到的合成结果会保存下来供下次使用。
 
-**[下载鸣潮 v0.4.22 Windows x64 便携版](https://cnb.cool/asgsv-studio/ASGSV/-/releases/download/wuwa-v0.4.22/ASGSV-v0.4.22-Windows-x64-Portable.zip)** · [发布说明及 SHA-256 校验](https://cnb.cool/asgsv-studio/ASGSV/-/releases/tag/wuwa-v0.4.22)
+**[下载鸣潮 v0.4.23 Windows x64 便携版](https://cnb.cool/asgsv-studio/ASGSV/-/releases/download/wuwa-v0.4.23/ASGSV-v0.4.23-Windows-x64-Portable.zip)** · [发布说明及 SHA-256 校验](https://cnb.cool/asgsv-studio/ASGSV/-/releases/tag/wuwa-v0.4.23)
 
 ## 解压即用
 
@@ -23,15 +23,19 @@ ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对�
 
 从 v0.4.21 起，便携版和同版本更新助手默认选用 **CNB 国内发布**。打开启动检查或更新中心即可匿名下载程序、台词索引和任务包。设置中的 **更新台词索引** 也使用当前选定的站点。手动切换站点后，工作台先核对发布签名，再记住选择。
 
-v0.4.21 用户可在 CNB 源点 **一键在线升级** 至 v0.4.22；从网盘升级可直接导入 `ASGSV-v0.4.22-Update.zip`。旧设置中的清华更新源会自动使用 CNB，手动选择的 GitHub 源会保留。
+v0.4.22 用户可在 CNB 源点 **一键在线升级** 至 v0.4.23。网盘用户可直接导入 `ASGSV-v0.4.23-Update.zip`。旧设置中的清华更新源会自动使用 CNB，手动选择的 GitHub 源会保留。
 
-已安装 v0.4.20 的用户可从发布方的 CNB 或网盘下载新版 **ASGSV-Update-Assistant.zip**，把其中的 `ASGSV-Update` 文件夹解压到原来的 `ASGSV.exe` 旁。关闭工作台，双击 `Start-Update.bat`，点 **一键在线升级**。也可在旧工作台依次导入 `ASGSV-v0.4.21-Update.zip` 和 `ASGSV-v0.4.22-Update.zip`。这两种方式都沿用原安装目录中的配音、声线和设置。
+已安装 v0.4.20 的用户可从发布方的 CNB 或网盘下载新版 **ASGSV-Update-Assistant.zip**，把其中的 `ASGSV-Update` 文件夹解压到原来的 `ASGSV.exe` 旁。关闭工作台，双击 `Start-Update.bat`，点 **一键在线升级**。也可在旧工作台依次导入 `ASGSV-v0.4.21-Update.zip`、`ASGSV-v0.4.22-Update.zip` 和 `ASGSV-v0.4.23-Update.zip`。这两种方式都沿用原安装目录中的配音、声线和设置。
 
 - **更新台词索引或单个任务**：点 **一键更新全部资源** 可补齐索引和已发布的任务包。只更新一项时，点 **检查资源**，选中中文台词索引或任务名，再点 **更新选中资源**。任务库自动刷新，日志监听在下一句读取新配音。任务包仍须匹配本机游戏资源和角色声线。
 - **使用网盘**：下载发布方提供的与当前程序版本衔接的增量更新包、索引包或任务包，保持 ZIP 原样，点 **导入更新包…**。程序与资源共用签名校验。初次安装选文件名含 `Portable` 的完整便携包。
-- **从 v0.4.17 首次升级**：关闭旧工作台，把 [首次更新助手](https://cnb.cool/asgsv-studio/ASGSV/-/releases/download/wuwa-v0.4.22/ASGSV-Update-Assistant.zip) 中的 `ASGSV-Update` 文件夹解压到旧版 `ASGSV.exe` 旁边，双击其中的 `Start-Update.bat`。按 v0.4.18、v0.4.19、v0.4.20、v0.4.21、v0.4.22 的顺序升级。使用网盘时依次导入对应程序更新包。保留原安装目录即可沿用个人录音、声线、设置和每日计划。
+- **从 v0.4.17 首次升级**：关闭旧工作台，把 [首次更新助手](https://cnb.cool/asgsv-studio/ASGSV/-/releases/download/wuwa-v0.4.23/ASGSV-Update-Assistant.zip) 中的 `ASGSV-Update` 文件夹解压到旧版 `ASGSV.exe` 旁边，双击其中的 `Start-Update.bat`。按 v0.4.18、v0.4.19、v0.4.20、v0.4.21、v0.4.22、v0.4.23 的顺序升级。使用网盘时依次导入对应程序更新包。保留原安装目录即可沿用个人录音、声线、设置和每日计划。
 
-## v0.4.22 功能
+## v0.4.23 功能
+
+账号菜单现在使用游戏内 UID 的尾号。带「最近登录」的是游戏记录中最后登录的角色。旧登录记录尚未和角色对应时，菜单会标为「游戏 UID 待确认」。用自己的账号登录鸣潮、进入大世界，重新打开账号菜单即可核对。后台继续使用手动选定的账号。
+
+本版修复了本机缺少任务缓存、游戏目录层级不同和资源挂载清单差异导致的预配音中断。每日计划按账号读取任务记录，逐句核对任务、台词指纹和原声依据；可复用的录音沿用同一个积分账本。
 
 - **实时配音** 根据游戏日志换句，显示当前任务、对白、播放进度和最近记录。点击历史对白可重听。
 - **任务库** 可扫描游戏日志中已下发的进行中和可接取支线，按账号同步任务名称与进度。支持搜索音色、逐句试听和一键补齐任务录音。

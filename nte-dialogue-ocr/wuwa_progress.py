@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+import re
 import sqlite3
 from uuid import uuid4
+
+from game_profiles import wuwa_client
+from wuwa_game_accounts import account_key, observed_roles
 
 from dialogue_generation import atomic_text, timestamp
 
@@ -13,30 +16,32 @@ PROGRESS_LABELS = {'completed': '已完成（有记录）', 'pending': '人工�
 
 
 def cache_path(install_root):
-    return Path(install_root).resolve() / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db'
+    return wuwa_client(install_root) / 'Saved/LocalStorage/LocalStorage.db'
 
 
-def account_key(identity):
-    return hashlib.sha256(('wuwa-local-account:' + identity).encode()).hexdigest()
+class MissingProgress(ValueError):
+    """No readable progress source. Malformed caches are reported separately."""
 
 
-def read_finished_quests(install_root):
-    path = cache_path(install_root)
+def _cache(path):
     if not path.is_file():
-        raise ValueError('未找到本机任务缓存；未将任何任务判为未完成')
+        return {}, '', ''
     connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
     try:
         connection.execute('PRAGMA query_only=ON')
+        recent = connection.execute('SELECT value FROM LocalStorage WHERE key=?', ('RecentlyLoginUID',)).fetchone()
         row = connection.execute('SELECT value FROM LocalStorage WHERE key=?', ('UserFinishedQuests',)).fetchone()
     finally:
         connection.close()
-    if not row or not isinstance(row[0], str) or len(row[0]) > 4_000_000:
+    last_uid = str(recent[0]).strip('"') if recent else ''
+    if not row:
+        return {}, '', last_uid
+    if not isinstance(row[0], str) or len(row[0]) > 4_000_000:
         raise ValueError('本机任务缓存缺失或格式不受支持')
     value = json.loads(row[0])
     if not isinstance(value, dict) or value.get('___MetaType___') != '___Map___' or not isinstance(value.get('Content'), list):
         raise ValueError('任务缓存 Map 格式不受支持')
     profiles = {}
-    labels = {}
     for pair in value['Content']:
         if not isinstance(pair, list) or len(pair) != 2:
             raise ValueError('任务缓存账号条目格式不受支持')
@@ -53,15 +58,57 @@ def read_finished_quests(install_root):
         if account in profiles:
             raise ValueError('任务缓存出现重复账号')
         profiles[account] = {str(q) for q in ids}
-        labels[account] = ('UID 尾号 ' + identity[-4:] if identity.isdecimal() and len(identity)>4
-                           else '游戏账号') + ' · ' + account[:6].upper()
-    return dict(profiles=profiles, labels=labels, path=str(path), sha256=hashlib.sha256(row[0].encode()).hexdigest())
+    return profiles, hashlib.sha256(row[0].encode()).hexdigest(), last_uid
+
+
+def read_finished_quests(install_root, known=()):
+    path = cache_path(install_root)
+    profiles, digest, recent = _cache(path)
+    observed = observed_roles(install_root)
+    roles = set(known) | observed
+    supported = set(profiles) | {sdk for sdk, _, _ in observed if sdk}
+    by_sdk, by_role = {}, {}
+    for sdk, role, suffix in roles:
+        if sdk:
+            by_sdk.setdefault(sdk, set()).add(role)
+            by_role.setdefault(role, set()).add(sdk)
+    labels = {key: '本地账号 · ' + key[:6].upper() + '（游戏 UID 待确认）' for key in profiles}
+    split = {sdk for sdk, group in by_sdk.items() if len(group) > 1}
+    for accounts in by_role.values():
+        if len(accounts) > 1:
+            split.update(accounts)
+    for sdk in split:
+        profiles.pop(sdk, None)
+        labels.pop(sdk, None)
+    owners = {}
+    last = account_key('role:' + recent) if recent else ''
+    if re.fullmatch(r'[1-9][0-9]{5,19}', recent):
+        # This is an in-game UID, but it carries no SDK association on its own.
+        observed.add(('', last, recent[-4:]))
+        roles.add(('', last, recent[-4:]))
+    for sdk, role, suffix in sorted(roles):
+        if sdk not in supported and (sdk or (sdk, role, suffix) not in observed):
+            continue
+        candidates = by_role.get(role, set())
+        owner = next(iter(candidates)) if len(candidates) == 1 and candidates.isdisjoint(split) else role
+        owners[role] = owner
+        profiles.setdefault(owner, set())
+        labels[owner] = ('游戏 UID 尾号 ' + suffix + ' · ' + owner[:6].upper()
+                         + ('（最近登录）' if role == last else ''))
+    if not profiles:
+        raise MissingProgress('尚未找到本机账号记录。请在所选游戏目录登录角色进入大世界，再打开账号菜单。')
+    return dict(profiles=profiles, labels=labels, path=str(path), sha256=digest,
+                owners=owners, split=split, observed=observed)
+
+
 
 
 class QuestProgress:
     def __init__(self, catalog):
         self.catalog, self.db = catalog, catalog.db
         self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS game_role_evidence(
+                sdk TEXT NOT NULL, role TEXT NOT NULL, suffix TEXT NOT NULL, PRIMARY KEY(sdk,role));
             CREATE TABLE IF NOT EXISTS quest_progress(
                 account TEXT NOT NULL, quest_id TEXT NOT NULL, status TEXT NOT NULL,
                 source TEXT NOT NULL, evidence TEXT NOT NULL, observed_at TEXT NOT NULL,
@@ -86,7 +133,20 @@ class QuestProgress:
             raise ValueError('游戏账号已切换，原账号的配音任务已停止。')
 
     def label(self, account):
-        return self.catalog.meta('account_alias:'+account) or self.catalog.meta('account_label:'+account) or account[:6].upper()
+        label = self.catalog.meta('account_label:'+account)
+        if label.startswith('UID 尾号') or not label:
+            label = '本地账号 · ' + account[:6].upper() + '（游戏 UID 待确认）'
+        alias = self.catalog.meta('account_alias:'+account)
+        return alias or label
+
+    def snapshot(self, install_root):
+        known = [tuple(row) for row in self.db.execute('SELECT sdk,role,suffix FROM game_role_evidence')]
+        snapshot = read_finished_quests(install_root, known)
+        fresh = snapshot['observed'] - set(known)
+        if fresh:
+            with self.db:
+                self.db.executemany('INSERT OR IGNORE INTO game_role_evidence VALUES(?,?,?)', fresh)
+        return snapshot
 
     def resolve(self, profiles, explicit=None):
         selected = explicit or self.account
@@ -99,7 +159,9 @@ class QuestProgress:
         return selected
 
     def refresh(self, install_root, account=None):
-        snapshot = read_finished_quests(install_root)
+        snapshot = self.snapshot(install_root)
+        for key in ('observed','owners','split'):
+            snapshot.pop(key)
         profiles = snapshot.pop('profiles')
         labels = snapshot.pop('labels')
         when = timestamp()
@@ -129,6 +191,14 @@ class QuestProgress:
         # Preserve old positive evidence when the cache shrinks. Absence is not a reset.
         atomic_text(self.catalog.root / 'reports/quest-progress.json', json.dumps(report, ensure_ascii=False, indent=2))
         return report
+
+    def refresh_for_preparation(self, install_root, *, require_progress=False):
+        try:
+            return self.refresh(install_root)
+        except MissingProgress:
+            if require_progress:
+                raise
+            return None
 
     def states(self, account=None):
         return {r['quest_id']: r['status'] for r in self.db.execute(

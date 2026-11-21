@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from game_profiles import wuwa_client
 import time
 
 import psutil
@@ -41,7 +42,7 @@ class GameProcessProbe(QtCore.QObject):
         # Some other Unreal games use this same filename. Verify the configured install.
         try:
             config = json.loads((self.root / 'config.json').read_text(encoding='utf-8'))
-            expected = Path(config['install_root']) / 'Wuthering Waves Game/Client/Binaries/Win64' / GAME_EXECUTABLE
+            expected = wuwa_client(config['install_root']) / 'Binaries/Win64' / GAME_EXECUTABLE
             state, detail = 'off', '未检测到鸣潮进程'
             for process in psutil.process_iter(['name']):
                 if (process.info['name'] or '').casefold() != GAME_EXECUTABLE.casefold():

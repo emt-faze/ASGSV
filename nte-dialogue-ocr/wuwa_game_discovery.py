@@ -3,6 +3,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+from game_profiles import wuwa_client
 import re
 from wuwa_resources import mount_entries, overlay_order
 
@@ -74,7 +75,7 @@ def validate_install(path):
     root=Path(path)
     if root.name.casefold()==GAME.casefold():
         root=root.parent
-    game=root/GAME
+    game=wuwa_client(root).parent
     if not (game/EXE).is_file() or not (game/EXE).stat().st_size:
         raise ValueError('缺少鸣潮游戏程序')
     paks=[p for p in (game/'Client/Content/Paks').glob('*.pak') if p.stat().st_size]
@@ -82,7 +83,7 @@ def validate_install(path):
         raise ValueError('缺少有效基础资源包')
     mounts=list((game/'Client/Saved/Resources').glob('*/Mount/MountResource.txt'))
     if not mounts:
-        raise ValueError('缺少更新资源挂载清单，请先完成启动器资源更新并登录游戏')
+        return root.resolve(), f'{len(paks)} 个基础包，当前没有热更新清单'
     checked=0
     for m in mounts:
         entries=overlay_order(mount_entries(m.read_text(encoding='utf-8-sig')))
@@ -105,7 +106,7 @@ def detect_install(preferred,stop,progress):
     candidates=[]
     for proc in psutil.process_iter(['name','exe'],ad_value=None):
         if proc.info['name']==EXE.name and proc.info['exe']:
-            candidates.append((Path(proc.info['exe']).parents[4],'运行中的游戏'))
+            candidates.append((Path(proc.info['exe']).parents[3],'运行中的游戏'))
     if preferred:
         candidates.append((Path(preferred),'已配置目录'))
     candidates.extend((p,'注册表') for p in registry_paths())
@@ -123,7 +124,7 @@ def detect_install(preferred,stop,progress):
         if stop.is_set():
             raise InterruptedError('已取消游戏目录探测')
         root=p.parent if p.name.casefold()==GAME.casefold() else p
-        if root in seen or not (root/GAME/EXE).is_file():
+        if root in seen or not (wuwa_client(root).parent/EXE).is_file():
             return None
         seen.add(root)
         try:
@@ -144,7 +145,7 @@ def detect_install(preferred,stop,progress):
             if stop.is_set():
                 raise InterruptedError('已取消游戏目录探测')
             path=Path(folder)
-            if GAME in dirs:
+            if GAME in dirs or ('Client' in dirs and (path/EXE).is_file()):
                 result=check(path,'盘符扫描')
                 if result:
                     return result

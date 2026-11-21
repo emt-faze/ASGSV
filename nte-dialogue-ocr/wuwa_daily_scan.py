@@ -5,14 +5,12 @@ import re
 from pathlib import Path
 from functools import lru_cache
 
-from wuwa_log_stream import TABLE, format_of
-from wuwa_progress import account_key, read_finished_quests
+from wuwa_game_accounts import LoginSession, log_events, log_files
 from wuwa_voice_pack import mount_signature
 
 MANIFEST = Path(__file__).parent / 'assets/daily-quest-fingerprints.json.gz'
 QUEST_ID = re.compile(r'\[任务id:\s*(\d+)\]', re.I)
 STATE = re.compile(r'\[StateId:\s*(Progress|Finish|Delete)\]')
-LOGIN = b'LoginProcedure-LoginRequest-'
 PENDING = '上线下发进行中的任务'
 AVAILABLE = '下发可接任务'
 
@@ -23,40 +21,23 @@ def verified_index():
         return json.load(f)
 
 
-def log_events(path):
-    with path.open('rb') as stream:
-        kind = format_of(stream.read(512))
-        if kind is None:
-            return
-        encoded, offset = kind
-        stream.seek(offset)
-        tail = b''
-        # A file may be growing. Scan only the bytes present when opened.
-        left = max(0, path.stat().st_size - offset)
-        while left:
-            chunk = stream.read(min(1 << 20, left))
-            if not chunk:
-                break
-            left -= len(chunk)
-            lines = (tail + (chunk.translate(TABLE) if encoded else chunk)).split(b'\n')
-            tail = lines.pop()
-            for line in lines:
-                if b'[Quest]' in line or (b'[Login]' in line and (LOGIN in line or b'[uId: ' in line)):
-                    yield line.decode('utf8', 'replace')
-
-
-def reduce_events(lines, active, excluded, session=None, *, target=None):
-    """Each file needs an identified session before it can supply multi-account evidence."""
+def reduce_events(lines, active, excluded, session=None, *, target=None, owners=None, split=()):
+    """Only attribute quest events to the selected login or a confirmed in-game UID."""
+    identity = LoginSession()
     owner = None
-    login_uid = None
     for line in lines:
-        if session is not None and '[Login]' in line and '[uId: ' in line:
-            uid = re.search(r'\[uId: (\d+)\]',line)
-            if uid:
-                owner = login_uid = account_key(uid[1])
-            continue
-        if '[Login]' in line and 'LoginProcedure-LoginRequest-登录成功' in line:
-            owner, login_uid = login_uid, None
+        event = identity.feed(line)
+        if event:
+            if event == 'sdk':
+                owner = None  # Login setup is not evidence of a successful switch.
+                continue
+            if event == 'login':
+                owner = identity.sdk if identity.sdk not in split else None
+            else:
+                previous = owner
+                owner = (owners or {}).get(identity.role, identity.role)
+                if previous == owner:
+                    continue
             if target is None or owner == target:
                 active.clear()
                 excluded.clear()
@@ -70,7 +51,6 @@ def reduce_events(lines, active, excluded, session=None, *, target=None):
         field = QUEST_ID.search(line)
         if not field:
             continue
-        login_uid = None
         if session is not None:
             session['seen'] = True
         key = field[1]
@@ -88,23 +68,19 @@ def reduce_events(lines, active, excluded, session=None, *, target=None):
 
 def scan(catalog, config):
     install = Path(config['install_root'])
-    profiles = read_finished_quests(install)['profiles']
+    snapshot = catalog.progress.snapshot(install)
+    profiles = snapshot['profiles']
     account = catalog.progress.resolve(profiles)
     if not catalog.progress.account:
         account = catalog.progress.refresh(install)['account']
     selection = catalog.progress.selection
     if selection[0] != account:
         raise ValueError('游戏账号已切换，请重新扫描。')
-    folder = install / 'Wuthering Waves Game/Client/Saved/Logs'
-    files = [p for p in folder.glob('Client-backup-*.log') if p.is_file()]
-    files.sort(key=lambda p: p.stat().st_mtime)
-    current = folder / 'Client.log'
-    if current.is_file():
-        files.append(current)
     active, excluded, session = {}, set(), {}
-    for file in files[-12:]:
+    for file in log_files(install):
         try:
-            reduce_events(log_events(file), active, excluded, session, target=account)
+            reduce_events(log_events(file), active, excluded, session, target=account,
+                          owners=snapshot['owners'], split=snapshot['split'])
         except FileNotFoundError:
             continue  # A rotation during reading is normal.
     finished = profiles[account]
@@ -138,7 +114,24 @@ def scan(catalog, config):
     return account, quests
 
 
-def matched_lines(inventory):
+def matched_lines(inventory, catalog=None, scopes=None):
     index = verified_index()
-    return index['quests'] if mount_signature(inventory) == index['mounts'] else {}
+    signature = mount_signature(inventory)
+    if not signature and not inventory.get('base_paks'):
+        return {}
+    if signature and signature == index['mounts']:
+        return index['quests']
+    # Pre-recordings can be prepared from a released index on another build.
+    # Match the quest, stable line ID and content fingerprint. Live pack playback
+    # keeps its separate build checks. Callers also verify original voice evidence.
+    if catalog is None or not scopes:
+        return {}
+    approved = {}
+    for scope in scopes:
+        reference = index['quests'].get(scope)
+        if not reference:
+            continue
+        if any(reference.get(r['id']) == r['fingerprint'] for r in catalog.lines([scope])):
+            approved[scope] = reference  # Consumers compare each actual fingerprint before synthesis.
+    return approved
 

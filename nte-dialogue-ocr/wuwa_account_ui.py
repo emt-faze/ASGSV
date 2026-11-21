@@ -4,7 +4,7 @@ import sqlite3
 from PySide6 import QtCore as C, QtWidgets as W
 
 from wuwa_daily_plan import config
-from wuwa_progress import cache_path, read_finished_quests
+from wuwa_progress import MissingProgress
 
 
 class GameAccountButton(W.QPushButton):
@@ -27,15 +27,21 @@ class GameAccountButton(W.QPushButton):
         return self.choose(only_if_needed=True, allow_missing=allow_missing)
 
     def detect_single(self):
-        if self.catalog.progress.account:
-            self.sync()
-            return
         try:
             install = config(self.catalog)['install_root']
-            if cache_path(install).is_file() and len(read_finished_quests(install)['profiles'])==1:
+            labels = self.catalog.progress.snapshot(install)['labels']
+            current = self.catalog.progress.account
+            if current:
+                if current in labels and self.catalog.meta('account_label:'+current) != labels[current]:
+                    with self.catalog.db:
+                        self.catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('account_label:'+current, labels[current]))
+                self.sync()
+            elif len(labels) == 1:
                 self.catalog.progress.refresh(install)
                 self.sync()
                 self.changed.emit()
+        except MissingProgress:
+            self.sync()
         except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
             self.problem.emit(str(exc))
 
@@ -43,9 +49,12 @@ class GameAccountButton(W.QPushButton):
         c = self.catalog
         try:
             install = config(c)['install_root']
-            if allow_missing and not c.progress.account and not cache_path(install).is_file():
-                return True
-            labels = read_finished_quests(install)['labels']
+            try:
+                labels = c.progress.snapshot(install)['labels']
+            except MissingProgress:
+                if only_if_needed and allow_missing:
+                    return True
+                raise
             if not labels:
                 raise ValueError('尚无游戏账号记录。请先登录鸣潮并打开任务列表。')
             current = c.progress.account

@@ -116,10 +116,13 @@ class Catalog:
         snapshot=self.meta('index_folder')
         if not hasattr(self,'_branch_policy') or snapshot!=getattr(self,'_branch_snapshot',''):
             self._branch_snapshot=snapshot
+            self.branch_policy_error = ''
             try:
                 folder=self.index_folder()
                 self._branch_policy=branch_policy_index(folder,file_digest(folder/'source.json'),self.meta('index_commit',COMMIT))
-            except (OSError,ValueError,KeyError,TypeError):
+            except (OSError,ValueError,KeyError,TypeError) as exc:
+                self.branch_policy_error = ('无法读取普通支线分类索引，请检查索引文件权限并重新导入 · '
+                                            + str(exc))
                 self._branch_policy=(set(),set())
         scopes, eligible=self._branch_policy
         key=(row['state_id'],row['branch'],row['line_id'],row['text_id'])
@@ -188,6 +191,9 @@ class Catalog:
         if not path.exists():
             return ''
         data = json.loads(path.read_text(encoding='utf-8'))
+        if not data['mounts']:
+            packages = data.get('base_paks', [])
+            return digest(['base', packages]) if packages else ''
         return digest([(m['path'], m['sha256']) for m in data['mounts']])
 
     def index_folder(self):

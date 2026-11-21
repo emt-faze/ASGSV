@@ -111,7 +111,8 @@ class MultiAccountTests(unittest.TestCase):
     def test_old_account_queue_survives_rotation_of_its_logs(self):
         self.select_and_scan(self.a,'quest:100')
         logs=cache_path(self.install).parent.parent/'Logs/Client.log'
-        logs.write_text('Log file open\n[Login] [uId: 200001234]\n[Quest] 下发可接任务 [任务id: 200]\n',encoding='utf8')
+        logs.write_text('Log file open\n[Login] [uId: 200001234]\n[Login] LoginProcedure-LoginRequest-登录成功\n'
+                        '[Quest] 下发可接任务 [任务id: 200]\n',encoding='utf8')
         who,items=scan(self.c,self.cfg)
         self.assertEqual((who,[(s,r) for s,_,r in items]),(self.a,[('quest:100','上次扫描 · 游戏记录 · 进行中')]))
         self.c.progress.refresh(self.install,self.b)

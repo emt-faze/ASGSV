@@ -10,6 +10,7 @@ import html
 import json
 import os
 from pathlib import Path
+from game_profiles import wuwa_client
 import re
 import sqlite3
 import subprocess
@@ -138,7 +139,7 @@ def load_references(root, review_path):
 
 def inventory_archives(install_root):
     install = Path(install_root).resolve()
-    client = install / 'Wuthering Waves Game/Client'
+    client = wuwa_client(install)
     entries, manifests = {}, []
     for path in sorted((client / 'Content/Paks').glob('*.pak')):
         entries[str(path.resolve())] = dict(path=str(path.resolve()), priority=0, order=0,

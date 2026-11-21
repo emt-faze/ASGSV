@@ -12,6 +12,17 @@ DEFAULT_INSTALL = r'F:\Wuthering Waves'
 GAME_IDS = {'nte', 'wuwa'}
 
 
+def wuwa_client(install_root):
+    root = Path(install_root).resolve()
+    if root.name.casefold() == 'client-win64-shipping.exe':
+        root = root.parents[2]
+    if root.name.casefold() == 'client' and (root/'Binaries').is_dir():
+        return root
+    if (root/'Client').is_dir() and not (root/'Wuthering Waves Game/Client').is_dir():
+        return root/'Client'
+    return root/'Wuthering Waves Game/Client'
+
+
 def validate_game(game_id):
     if game_id not in GAME_IDS:
         raise ValueError('Unknown game: ' + str(game_id))
@@ -23,7 +34,7 @@ def wuwa_window_kind(path, window_class, install_root):
         return None
     root = ntpath.normcase(ntpath.abspath(install_root))
     actual = ntpath.normcase(ntpath.abspath(path))
-    game = ntpath.join(root, 'Wuthering Waves Game', 'Client', 'Binaries', 'Win64', 'Client-Win64-Shipping.exe')
+    game = ntpath.normcase(str(wuwa_client(root) / 'Binaries/Win64/Client-Win64-Shipping.exe'))
     if actual == ntpath.normcase(game) and window_class == 'UnrealWindow':
         return 'game'
     if actual == ntpath.join(root, 'launcher.exe') and window_class in {'CefBrowserWindow', 'Chrome_WidgetWin_1', 'Qt5QWindowIcon', 'Qt6QWindowIcon'}:

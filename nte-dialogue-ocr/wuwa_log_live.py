@@ -1,6 +1,7 @@
 """Desktop live dubbing from the game log and the versioned dialogue catalog."""
 import json
 from pathlib import Path
+from game_profiles import wuwa_client
 import threading
 import time
 import queue
@@ -197,7 +198,7 @@ class LogWorker(QtCore.QThread):
             if self.owns_jobs:
                 self.jobs=GenerationService(self.root,lambda msg:self.emit(generation_message=msg))
             stamp=None
-            log_path=Path(config['install_root'])/'Wuthering Waves Game/Client/Saved/Logs/Client.log'
+            log_path=wuwa_client(config['install_root'])/'Saved/Logs/Client.log'
             while not self.stop_event.is_set():
                 if time.monotonic()>=check_process:
                     check_process=time.monotonic()+.4

@@ -1,13 +1,14 @@
 """Read portable finished quest recordings for the matching resource build."""
 import json
 from pathlib import Path
+from game_profiles import wuwa_client
 import re
 
 from prepared_playback import PreparedLine
 
 
 def mount_signature(inventory):
-    base = Path(inventory['install_root']) / 'Wuthering Waves Game/Client/Saved/Resources'
+    base = wuwa_client(inventory['install_root']) / 'Saved/Resources'
     return sorted([Path(m['path']).relative_to(base).as_posix(), m['sha256']] for m in inventory['mounts'])
 
 

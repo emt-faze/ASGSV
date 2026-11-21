@@ -519,9 +519,7 @@ class BatchGenerator:
                     if not binding or not binding['transcript_reviewed'] or binding['voice']!=live_row.voice:
                         raise ValueError('生成前角色绑定已变化')
                 else:
-                    local_progress = Path(config['install_root']) / 'Wuthering Waves Game/Client/Saved/LocalStorage/LocalStorage.db'
-                    if local_progress.exists() or catalog.progress.account:
-                        catalog.progress.refresh(config['install_root'])
+                    catalog.progress.refresh_for_preparation(config['install_root'])
                     catalog.progress.validate_generation(self.project)
                 cloud_only = catalog.cloud_only()
             finally:

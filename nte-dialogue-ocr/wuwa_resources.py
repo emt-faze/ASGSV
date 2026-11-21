@@ -7,6 +7,7 @@ import hashlib
 import json
 from http.client import HTTPException
 from pathlib import Path, PurePosixPath
+from game_profiles import wuwa_client
 import re
 import threading
 import subprocess
@@ -81,10 +82,30 @@ def overlay_order(entries):
     return sorted(active.values(), key=lambda e: (e['priority'], e['order']))
 
 
+def base_packages(client):
+    result = []
+    for path in sorted((client / 'Content/Paks').glob('*.pak')):
+        stat = path.stat()
+        if stat.st_size:
+            result.append(dict(path=str(path), bytes=stat.st_size, mtime_ns=stat.st_mtime_ns))
+    return result
+
+
+def resource_snapshot_current(info):
+    client = wuwa_client(info['install_root'])
+    paths = {str(p) for p in (client/'Saved/Resources').glob('*/Mount/Mount*.txt')
+             if p.name in {'MountResource.txt', 'MountLang_zh.txt'}}
+    if paths != {m['path'] for m in info['mounts']}:
+        return False
+    if paths:
+        return all(file_digest(m['path']) == m['sha256'] for m in info['mounts'])
+    return bool(info['base_paks']) and base_packages(client) == info['base_paks']
+
+
 def inventory(install_root=DEFAULT_INSTALL, output_root=WUWA_ROOT):
     install = Path(install_root).resolve()
     output = safe_output(output_root, install)
-    client = install / 'Wuthering Waves Game' / 'Client'
+    client = wuwa_client(install)
     if not (client / 'Binaries/Win64/Client-Win64-Shipping.exe').is_file():
         raise ValueError('未找到鸣潮实际游戏程序')
     mounts = []
@@ -99,8 +120,7 @@ def inventory(install_root=DEFAULT_INSTALL, output_root=WUWA_ROOT):
                 versions.add(match[1])
         mounts.append(dict(path=str(path), sha256=file_digest(path), entries=entries))
     result = dict(game_id='wuwa', install_root=str(install), resource_versions=sorted(versions),
-                  mounts=mounts, base_paks=[dict(path=str(p), bytes=p.stat().st_size)
-                    for p in sorted((client / 'Content/Paks').glob('*.pak'))],
+                  mounts=mounts, base_paks=base_packages(client),
                   parser='CUE4Parse 1.2.2', parser_status='not_probed', coverage_verified=False)
     atomic_text(output / 'sources/local-inventory.json', json.dumps(result, ensure_ascii=False, indent=2))
     return result
@@ -256,7 +276,7 @@ def download_tables(root=WUWA_ROOT, stop=None, progress=print):
 
 def probe_local(root=WUWA_ROOT, install_root=DEFAULT_INSTALL, progress=print):
     info = inventory(install_root, root)
-    client = Path(install_root) / 'Wuthering Waves Game/Client'
+    client = wuwa_client(install_root)
     directories = {client / 'Content/Paks'}
     for manifest in info['mounts']:
         base = Path(manifest['path']).parent.parent
