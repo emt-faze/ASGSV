@@ -100,11 +100,11 @@ def run(root, *, setup=False):
             raise ValueError('请先在「配音与预算」保存 BreezeBlue API Key，领取时用它核对到账。')
 
         if setup:
-            record('checking', '正在检查专用 Chrome 的登录状态…')
+            record('checking', '正在检查专用浏览器 的登录状态…')
             try:
                 website_claim()
             except LoginRequired:
-                record('login', '请在专用 Chrome 登录自己的 BreezeBlue 账号。登录后会自动继续，也可手动关闭该窗口。')
+                record('login', '请在专用浏览器 登录自己的 BreezeBlue 账号。登录后会自动继续，也可手动关闭该窗口。')
                 wait_for_login()
 
         def verify():
@@ -121,13 +121,13 @@ def run(root, *, setup=False):
         day = datetime.now(timezone.utc).date().isoformat()
         previous = read_record(intent)
         if previous.get('day') == day:
-            return record('pending', '本领取周期已经提交，当前账号还没有到账流水。请核对专用 Chrome 与配音密钥是否属于同一账号。')
+            return record('pending', '本领取周期已经提交，当前账号还没有到账流水。请核对专用浏览器 与配音密钥是否属于同一账号。')
 
         def mark_submitted():
             write_record(intent, dict(day=datetime.now(timezone.utc).date().isoformat()))
             record('pending', '领取请求待核验，正在等待账户流水…')
 
-        record('browser', '正在用专用 Chrome 检查每日赠送…')
+        record('browser', '正在用专用浏览器 检查每日赠送…')
         outcome = website_claim(mark_submitted)
         for delay in (0, 2, 5, 8):
             if delay:

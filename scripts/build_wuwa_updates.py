@@ -95,7 +95,7 @@ def build(args):
         with ZipFile(portable.with_suffix('.partial'), 'w', ZIP_DEFLATED, compresslevel=4) as z:
             for item in old.infolist():
                 name = item.filename.removeprefix('ASGSV/')
-                if name.startswith(DIRECTORY + '/'):
+                if name.startswith('tools/breezeblue-wheels/'):
                     manifest['files'].pop(name, None)
                     continue
                 if name in changes or name == 'FILE_MANIFEST.json':

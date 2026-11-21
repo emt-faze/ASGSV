@@ -27,8 +27,8 @@ class ClaimPane(W.QWidget):
         self.key.setEchoMode(W.QLineEdit.Password)
         self.key.setPlaceholderText('已保存的密钥自动复用，首次使用可在这里粘贴')
         self.get_key = W.QPushButton('获取密钥')
-        self.get_key.clicked.connect(lambda: dialog.start(lambda _: open_login(keys=True), dialog.feedback.setText, '正在打开 BreezeBlue 密钥页面…'))
-        self.login = W.QPushButton('重新登录专用 Chrome')
+        self.get_key.clicked.connect(lambda: dialog.start(lambda _: open_login(keys=True), dialog.feedback.setText, '正在准备浏览器并打开 BreezeBlue 密钥页面…'))
+        self.login = W.QPushButton('重新登录专用浏览器')
         self.enable = W.QPushButton('一键开启每日领取')
         self.disable = W.QPushButton('停用每日领取')
         self.check = W.QPushButton('立即领取 / 核对到账')
@@ -39,8 +39,8 @@ class ClaimPane(W.QWidget):
         self.disable.clicked.connect(lambda: self.schedule(False))
         self.check.clicked.connect(lambda: dialog.start(lambda c: run(c.root), self.checked, '正在核对当天的赠送积分…'))
         form = W.QFormLayout(self)
-        info = W.QLabel('点「一键开启每日领取」。需要登录时，专用 Chrome 会自动打开，登录后继续核对到账。'
-                        '之后只需电脑登录 Windows 并联网，日常 Chrome 和工作台可以关闭。')
+        info = W.QLabel('点「一键开启每日领取」。需要登录时，专用浏览器 会自动打开，登录后继续核对到账。'
+                        '工具会选用现有 Chrome 或 Edge，两者都没有时首次会下载专用 Chromium。之后只需电脑登录 Windows 并联网，日常浏览器 和工作台可以关闭。')
         info.setWordWrap(True)
         form.addRow(info)
         key_row = W.QHBoxLayout()
@@ -81,11 +81,12 @@ class ClaimPane(W.QWidget):
                 if not key:
                     raise ValueError('请在本页填入自己的 BreezeBlue API Key，然后点击一键开启。')
                 read_ledger(key)
-                prepare_browser()
+                browser = prepare_browser()
                 if typed:
                     save_key(typed)
             state = manage(c.root, 'register' if enable else 'remove', at, kind='claim')
             if enable:
+                state['browser'] = browser.label
                 if not state['registered']:
                     raise ValueError('Windows 未登记领取计划，请检查当前账号的任务计划程序权限。')
                 subprocess.Popen([str(python_path()), '-X', 'utf8', str(Path(__file__).with_name('wuwa_daily_claim.py')),
@@ -95,8 +96,8 @@ class ClaimPane(W.QWidget):
         def finished(data):
             self.key.clear()
             self.show_schedule(data)
-            self.dialog.feedback.setText('后台计划已启用，首次登录和到账核对正在进行。' if data['registered'] else '每日领取已停用。')
-        self.dialog.start(change, finished, '正在验证密钥、准备组件并登记 Windows 计划…' if enable else '正在停用每日领取…')
+            self.dialog.feedback.setText(f"已启用 · {data['browser']}，正在检查登录及到账。" if data['registered'] else '每日领取已停用。')
+        self.dialog.start(change, finished, '正在验证密钥并准备浏览器；首次下载专用 Chromium 可能需要几分钟…' if enable else '正在停用每日领取…')
 
     def checked(self, result):
         self.dialog.feedback.setText(result['message'])

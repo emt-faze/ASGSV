@@ -1,4 +1,5 @@
-"""Use the official daily gift button in a separate, per-user Google Chrome profile."""
+"""Use the official daily gift button in a dedicated, per-user browser profile."""
+from dataclasses import dataclass
 import importlib
 import os
 from pathlib import Path
@@ -20,26 +21,122 @@ def home():
     return Path(os.environ['LOCALAPPDATA']) / 'ASGSV'
 
 
-def profile():
-    return home() / 'BreezeClaimChrome'
+@dataclass(frozen=True)
+class ClaimBrowser:
+    kind: str
+    executable: Path
+
+    @property
+    def label(self):
+        return {'chrome': 'Chrome', 'msedge': 'Edge', 'chromium': 'ASGSV 专用 Chromium'}[self.kind]
+
+    @property
+    def profile(self):
+        folders = {'chrome': 'BreezeClaimChrome', 'msedge': 'BreezeClaimEdge', 'chromium': 'BreezeClaimChromium'}
+        return home() / folders[self.kind]
+
+    def launch_options(self):
+        return dict(channel=self.kind, executable_path=str(self.executable), chromium_sandbox=True,
+                    args=['--disable-background-mode'])
 
 
-def chrome():
+def installed_browser(kind):
     import winreg
+    relative = {'chrome': 'Google/Chrome/Application/chrome.exe',
+                'msedge': 'Microsoft/Edge/Application/msedge.exe'}[kind]
+    name = Path(relative).name
     for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        try:
-            with winreg.OpenKey(hive, r'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe') as key:
-                path = Path(winreg.QueryValueEx(key, '')[0].strip('"'))
-            if path.is_file() and path.name.lower() == 'chrome.exe':
-                return path
-        except FileNotFoundError:
-            continue
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\' + name,
+                                    0, winreg.KEY_READ | view) as key:
+                    value = winreg.QueryValueEx(key, '')[0]
+            except (FileNotFoundError, PermissionError):
+                continue
+            path = Path(os.path.expandvars(value.strip('"')))
+            if path.name.lower() == name and path.is_file():
+                return ClaimBrowser(kind, path)
     for var in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):
         if os.environ.get(var):
-            path = Path(os.environ[var]) / 'Google/Chrome/Application/chrome.exe'
+            path = Path(os.environ[var]) / relative
             if path.is_file():
-                return path
-    raise ValueError('未找到 Google Chrome，请从 https://www.google.com/chrome/ 安装后再点一键开启。')
+                return ClaimBrowser(kind, path)
+    return None
+
+
+def default_system_browser():
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice') as key:
+            progid = winreg.QueryValueEx(key, 'ProgId')[0]
+    except (FileNotFoundError, PermissionError):
+        return 'chrome'
+    return 'msedge' if progid.casefold().startswith('msedgehtm') else 'chrome'
+
+
+def managed_browser(install):
+    if not install and not driver_path().is_dir():
+        return None
+    ensure_driver()
+    with browser_driver().sync_playwright() as pw:
+        default = Path(pw.chromium.executable_path)
+    # Keep Playwright's platform-specific executable layout inside our own cache.
+    revision = next((p for p in default.parents if re.fullmatch(r'chromium-\d+', p.name)), None)
+    if revision is None:
+        raise ValueError('领取组件未能识别配套的 Chromium 版本，请更新工作台。')
+    cache = home() / 'claim-tools' / 'browsers'
+    directory = cache / revision.name
+    executable = directory / default.relative_to(revision)
+    def ready():
+        return executable.is_file() and (directory / 'INSTALLATION_COMPLETE').is_file()
+    if not ready():
+        if not install:
+            return None
+        from playwright._impl._driver import compute_driver_executable, get_driver_env
+        env = dict(get_driver_env(), PLAYWRIGHT_BROWSERS_PATH=str(cache))
+        try:
+            proc = subprocess.run([*compute_driver_executable(), 'install', '--no-shell', 'chromium'],
+                                  env=env, capture_output=True, timeout=600, creationflags=subprocess.CREATE_NO_WINDOW)
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError('专用 Chromium 下载超时，请检查网络并重试。') from exc
+        if proc.returncode or not ready():
+            output = (proc.stdout + proc.stderr).decode('utf8', 'replace')
+            code = re.search(r'(?:status(?: code)?[ :]+|server returned code )(\d{3})', output, re.I)
+            detail = 'HTTP ' + code[1] if code else f'退出码 {proc.returncode}'
+            raise ValueError(f'专用 Chromium 安装未完成（{detail}）。请检查网络后重试。')
+    return ClaimBrowser('chromium', executable)
+
+
+def select_browser(*, install=False):
+    choice = home() / 'claim-state' / 'browser.txt'
+    try:
+        previous = choice.read_text('ascii').strip()
+    except FileNotFoundError:
+        previous = 'chrome' if (home() / 'BreezeClaimChrome' / 'Default').is_dir() else ''
+    order = dict.fromkeys((previous, default_system_browser(), 'chrome', 'msedge'))
+    selected = None
+    for kind in order:
+        if kind in ('chrome', 'msedge'):
+            selected = installed_browser(kind)
+        elif kind == 'chromium':
+            selected = managed_browser(False)
+        if selected:
+            break
+    if not selected:
+        selected = managed_browser(install)
+    if not selected:
+        raise LoginRequired('需要准备专用浏览器，请在「每日领积分」点一键开启。')
+    if previous != selected.kind or not choice.is_file():
+        choice.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile('w', encoding='ascii', dir=choice.parent, delete=False) as stream:
+            stream.write(selected.kind)
+            temp = Path(stream.name)
+        try:
+            os.replace(temp, choice)
+        finally:
+            temp.unlink(missing_ok=True)
+    return selected
 
 
 class LoginRequired(ValueError):
@@ -47,8 +144,9 @@ class LoginRequired(ValueError):
 
 
 def launch_login(url=URL):
-    profile().mkdir(parents=True, exist_ok=True)
-    return subprocess.Popen([str(chrome()), '--user-data-dir=' + str(profile()), '--no-first-run',
+    browser = select_browser(install=True)
+    browser.profile.mkdir(parents=True, exist_ok=True)
+    return subprocess.Popen([str(browser.executable), '--user-data-dir=' + str(browser.profile), '--no-first-run',
                       '--no-default-browser-check', '--disable-background-mode', '--app=' + url])
 
 
@@ -56,7 +154,7 @@ def open_login(*, keys=False):
     launch_login(URL + '/api-keys' if keys else URL)
     if keys:
         return '请创建或复制自己的 API Key，关闭该专用窗口，在本页粘贴后点击一键开启。'
-    return '请在专用 Chrome 登录与配音密钥相同的账号，看到开发者控制台后关闭这个专用窗口。'
+    return '请在专用浏览器 登录与配音密钥相同的账号，看到开发者控制台后关闭这个专用窗口。'
 
 
 def wait_for_login():
@@ -75,7 +173,7 @@ def wait_for_login():
             if win32process.GetWindowThreadProcessId(hwnd)[1] != proc.pid or not win32gui.IsWindowVisible(hwnd):
                 return
             title = win32gui.GetWindowText(hwnd)
-            if re.fullmatch(r'(?:开发者|Developer)\s*[|·-]\s*Breeze\s*Blue(?:\s*[-–]\s*Google Chrome)?', title, re.I):
+            if re.fullmatch(r'(?:开发者|Developer)\s*[|·-]\s*Breeze\s*Blue(?:\s*[-–]\s*(?:Google Chrome(?: for Testing)?|Microsoft Edge|Chromium))?', title, re.I):
                 ready.append(hwnd)
 
         win32gui.EnumWindows(inspect, None)
@@ -101,16 +199,22 @@ def driver_path():
 
 def browser_driver():
     folder = driver_path()
-    if folder.is_dir() and str(folder) not in sys.path:
+    if not folder.is_dir():
+        raise ValueError('领取组件尚未安装。')
+    if str(folder) not in sys.path:
         sys.path.insert(0, str(folder))
     try:
         return importlib.import_module('playwright.sync_api')
     except ImportError as exc:
-        raise ValueError('领取组件未就绪，请点击「保存时间并启用」安装。') from exc
+        raise ValueError('领取组件未就绪，请点击「一键开启每日领取」安装。') from exc
 
 
 def prepare_browser():
-    chrome()
+    ensure_driver()
+    return select_browser(install=True)
+
+
+def ensure_driver():
     try:
         browser_driver()
         return
@@ -177,7 +281,7 @@ def gift_button(page):
                 matches.append(button)
                 break
     if len(matches) > 1:
-        raise AmbiguousGift('网页上有多个领取入口，请在专用 Chrome 核对当日赠送。')
+        raise AmbiguousGift('网页上有多个领取入口，请在专用浏览器 核对当日赠送。')
     return matches[0] if matches else None
 
 
@@ -190,21 +294,22 @@ def cooling_down(page):
 
 
 def website_claim(before_click=None):
-    if not (profile() / 'Default').is_dir():
-        raise LoginRequired('请先登录 BreezeBlue 的专用 Chrome 窗口。')
+    browser = select_browser()
+    if not (browser.profile / 'Default').is_dir():
+        raise LoginRequired('请先登录 BreezeBlue 的专用浏览器 窗口。')
+    ensure_driver()
     driver = browser_driver()
     with driver.sync_playwright() as pw:
         try:
-            ctx = pw.chromium.launch_persistent_context(str(profile()), channel='chrome',
-                      executable_path=str(chrome()), headless=True, chromium_sandbox=True,
-                      args=['--disable-background-mode'], timeout=30000)
+            ctx = pw.chromium.launch_persistent_context(str(browser.profile), headless=True,
+                        timeout=30000, **browser.launch_options())
         except driver.Error as exc:
-            raise ValueError('专用 Chrome 未能启动。请关闭专用登录窗口后重试。') from exc
+            raise ValueError('专用浏览器 未能启动。请关闭专用登录窗口后重试。') from exc
         try:
             page = ctx.new_page()
             reply = page.goto(URL, wait_until='domcontentloaded', timeout=45000)
             if reply and reply.status >= 400:
-                raise ValueError(f'开发者页面返回 HTTP {reply.status}，请在专用 Chrome 检查连接或登录状态。')
+                raise ValueError(f'开发者页面返回 HTTP {reply.status}，请在专用浏览器 检查连接或登录状态。')
             menu_opened = False
             ambiguous = False
             ready_since = None
@@ -212,9 +317,9 @@ def website_claim(before_click=None):
             while time.monotonic() < until:
                 url = urlsplit(page.url)
                 if url.hostname != 'breezeblue.ai' or '/auth/' in url.path or '/login' in url.path:
-                    raise LoginRequired('专用账户需要重新登录，请打开专用 Chrome。')
+                    raise LoginRequired('专用账户需要重新登录，请打开专用浏览器。')
                 if page.get_by_text(re.compile(r'验证您是人类|验证您是真人|verify you are human', re.I)).first.is_visible():
-                    raise LoginRequired('网站要求人工验证，请在专用 Chrome 完成。')
+                    raise LoginRequired('网站要求人工验证，请在专用浏览器 完成。')
                 if page.get_by_text(DONE).first.is_visible() or cooling_down(page):
                     return 'already'
                 try:
@@ -260,8 +365,8 @@ def website_claim(before_click=None):
                 ready_since = None
                 page.wait_for_timeout(400)
             if ambiguous:
-                raise AmbiguousGift('网页持续显示多个领取入口，请在专用 Chrome 核对。')
-            raise ValueError('未找到可领取的每日赠送按钮。请在专用 Chrome 检查页面或登录状态。')
+                raise AmbiguousGift('网页持续显示多个领取入口，请在专用浏览器 核对。')
+            raise ValueError('未找到可领取的每日赠送按钮。请在专用浏览器 检查页面或登录状态。')
         except driver.Error as exc:
             detail = str(exc).splitlines()[0][:150]
             raise ValueError('无法完成网页领取 · ' + detail) from exc

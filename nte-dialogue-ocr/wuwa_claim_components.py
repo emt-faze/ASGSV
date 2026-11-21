@@ -4,13 +4,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-DRIVER = '1.56.0'
-DIRECTORY = 'tools/breezeblue-wheels'
+DRIVER = '1.65.2'
+DIRECTORY = 'tools/breezeblue-wheels/' + DRIVER
 WHEELS = {
     'greenlet-3.5.6-cp312-cp312-win_amd64.whl': '7ac4abb3877c43af320392c664774eef6fa2cc063c79a55fc02d844a3cbe7395',
-    'playwright-1.56.0-py3-none-win_amd64.whl': '3c7fc49bb9e673489bf2622855f9486d41c5101bbed964638552b864c4591f94',
-    'pyee-13.0.1-py3-none-any.whl': 'af2f8fede4171ef667dfded53f96e2ed0d6e6bd7ee3bb46437f77e3b57689228',
-    'typing_extensions-4.16.0-py3-none-any.whl': '481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8',
+    'playwright-1.65.2-py3-none-win_amd64.whl': 'd0aec9e1c97b6f497f3d9f2ad6e1b7f299968e61239d71f100298b0690f3c776',
 }
 INDEXES = ('https://pypi.tuna.tsinghua.edu.cn/simple', 'https://pypi.org/simple')
 
