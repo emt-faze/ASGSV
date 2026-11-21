@@ -55,15 +55,26 @@ class DailyCasting:
 
     def consider(self, scope, row, members, body, spoken):
         """Called only for a missing line with up-to-date resource and original-voice evidence."""
+        from wuwa_audition import hold, pending
         c = self.c
         sid, identity = row['speaker_id'], row['id']
         if (scope,sid) in self.problems:
             return
+        waiting = pending(c,sid)
+        if waiting:
+            self.problems[scope,sid] = waiting['reason']+' · 请在任务库试听确认'
+            return
         binding = c.binding(sid)
         bound = binding['voice'].removeprefix('breeze:') if binding else ''
         reviewed = (reviewed_roles(c,scope) or {}).get(sid)
-        if reviewed in ('pending','original') or original_problem(c,sid,bound) or (binding and not binding['voice'].startswith('breeze:')):
+        if reviewed=='original' or original_problem(c,sid,bound) or (binding and not binding['voice'].startswith('breeze:')):
             self.problems[scope,sid] = '角色等待原声或人工选声'
+            return
+        if reviewed=='pending':
+            try:
+                hold(c,c.progress.selection,scope,row,'此角色的声线有待确认',bound,binding['voice'] if binding else '')
+            except ValueError as exc:
+                self.problems[scope,sid] = str(exc)
             return
         if reviewed in ('male','female') and bound:
             preset = c.db.execute('SELECT gender FROM breeze_presets WHERE id=?',(bound,)).fetchone()

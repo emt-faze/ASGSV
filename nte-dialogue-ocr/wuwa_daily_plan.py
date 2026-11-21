@@ -158,9 +158,9 @@ def _run(c, scheduled, dry, selected):
         raise ValueError('请在每日计划的「配音与预算」中将配音引擎切换为 BreezeBlue。')
     if not c.branch_rule_enabled():
         raise ValueError('请在每日计划的「配音与预算」中启用普通支线配音规则。')
-    if not breeze.api_key():
-        raise ValueError('请在每日计划的「配音与预算」中保存 BreezeBlue API Key。')
     if not c.db.execute('SELECT 1 FROM breeze_presets LIMIT 1').fetchone():
+        if not breeze.api_key():
+            raise ValueError('请在每日计划的「配音与预算」中保存 BreezeBlue API Key 以同步音色。')
         breeze.refresh_presets(c)
     def status(scope, msg):
         with c.db:
@@ -304,7 +304,7 @@ def _run(c, scheduled, dry, selected):
                 checkpoint(f'{name} · 已就绪 {ready}/{len(approved)} 句')
             except (ValueError,OSError) as exc:
                 msg=str(exc)
-                if any(word in msg for word in ('HTTP 401','HTTP 402','HTTP 403','HTTP 429','timed out','urlopen error','WinError')):
+                if any(word in msg for word in ('HTTP 401','HTTP 402','HTTP 403','HTTP 429','API Key','timed out','urlopen error','WinError')):
                     raise ValueError('云端连接或账户需要处理 · '+msg) from None
                 counts[msg] += 1
         details = '；'.join(f'{why} {n} 句' for why,n in counts.items())

@@ -103,6 +103,9 @@ def refresh_presets(catalog, *, key=None):
 
 def assign_preset(catalog, row):
     sid, speaker = row['speaker_id'], row['speaker']
+    from wuwa_audition import pending
+    if pending(catalog,sid):
+        raise ValueError('该角色正在等待任务库试音确认')
     binding = catalog.binding(sid)
     if binding:
         return binding
@@ -120,7 +123,11 @@ def assign_preset(catalog, row):
     pool = [p for p in candidates if p['name'] == speaker and (not age or p['age']==age)] or matching_age or ordinary or candidates
     selected = pool[int.from_bytes(hashlib.sha256(sid.encode()).digest()[:8],'big') % len(pool)]
     with catalog.db:
-        catalog.db.execute('INSERT OR IGNORE INTO breeze_cast VALUES(?,?)', (sid, selected['id']))
+        catalog.db.execute('''INSERT OR IGNORE INTO breeze_cast
+            SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM audition_holds WHERE account=? AND speaker_id=?)''',
+            (sid,selected['id'],catalog.progress.account,sid))
+        if pending(catalog,sid):
+            raise ValueError('该角色正在等待任务库试音确认')
     return catalog.binding(sid)
 
 
@@ -192,7 +199,7 @@ def fetch_wav(text,cloud_voice,key,direction=DIRECTION,spoken=None):
         return data
 
 
-def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoken=None,max_daily_credits=None):
+def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoken=None,max_daily_credits=None,reuse=None):
     if spoken is None:
         spoken = spoken_text(text, catalog.root)
     key=recipe(text,cloud_voice,direction,spoken=spoken)
@@ -211,7 +218,21 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoke
                     db.execute("UPDATE breeze_calls SET state='ready' WHERE cache_key=?",(key,))
                 db.commit()
                 return path,True
-            raise ValueError('同一云端请求已有记录，请核对云端历史后处理，已避免重复扣额')
+            if reuse is None or prior[0] not in ('validated','ready') or prior[1] != reuse.sha256:
+                raise ValueError('同一云端请求已有记录，请核对云端历史后处理，已避免重复扣额')
+        if reuse is not None:
+            from wuwa_update import atomic
+            check_audio(reuse.path)
+            data=reuse.path.read_bytes()
+            if hashlib.sha256(data).hexdigest()!=reuse.sha256:
+                raise ValueError('已有录音发生变化，请刷新后重试')
+            atomic(path,data)
+            if prior:
+                db.execute("UPDATE breeze_calls SET state='ready' WHERE cache_key=?",(key,))
+            else:
+                db.execute("INSERT INTO breeze_calls VALUES(?,?,0,'ready',?)",(key,date.today().isoformat(),reuse.sha256))
+            db.commit()
+            return path,True
         limit=min(400,int(catalog.meta('breeze_daily_credits','0')))*10
         if max_daily_credits is not None:
             limit = min(limit, max_daily_credits * 10)

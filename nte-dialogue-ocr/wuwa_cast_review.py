@@ -52,6 +52,9 @@ def review_problem(catalog, quest, speaker_id=None, voice_id=None):
 
 
 def line_problem(catalog, line_id, speaker_id, voice_id):
+    from wuwa_audition import pending
+    if pending(catalog,speaker_id):
+        return '该角色正在等待任务库试音确认'
     if catalog.meta('require_quest_cast_review') != '1':
         return ''
     original = original_problem(catalog,speaker_id,voice_id)

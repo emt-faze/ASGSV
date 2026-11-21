@@ -105,27 +105,31 @@ def infer(base, model, speaker, dialogue, voices, requirements):
 
 
 def voice_for(c, scope, row, members, *, day=None):
+    from wuwa_audition import NeedsAudition, hold, pending
     from wuwa_cast_context import quest_suggestion
     from wuwa_cast_review import original_problem, reviewed_roles
     sid = row['speaker_id']
+    selection = c.progress.selection
     binding = c.binding(sid)
+    expected = binding['voice'] if binding else ''
+    waiting = pending(c,sid)
+    if waiting:
+        raise NeedsAudition(waiting['reason']+' · 请在任务库试听确认')
     voice = ''
-    if day:
-        reviewed = (reviewed_roles(c,scope) or {}).get(sid)
-        if reviewed in ('original','pending'):
-            raise ValueError('角色等待原声或人工选声')
+    reviewed = (reviewed_roles(c,scope) or {}).get(sid)
+    if reviewed == 'original':
+        raise ValueError('此角色沿用原声')
     if binding:
         voice = binding['voice'].removeprefix('breeze:') if binding['voice'].startswith('breeze:') else ''
         if not voice or original_problem(c,sid,voice):
             raise ValueError('角色保留原声或本地声线，等待可用录音')
-        if not day:
-            return voice
     if not voice and (original_problem(c,sid,'') or c.db.execute('SELECT 1 FROM original_voice_roles WHERE speaker_id=?',(sid,)).fetchone()):
         raise ValueError('角色沿用原声，等待原声音色')
+    if reviewed == 'pending':
+        hold(c,selection,scope,row,'此角色的声线有待确认',voice,expected)
+    if voice and not day:
+        return voice
     gender, age, _ = quest_suggestion(members, sid, row['speaker'])
-    reviewed = (reviewed_roles(c,scope) or {}).get(sid)
-    if reviewed in ('original','pending'):
-        raise ValueError('角色等待原声或人工选声')
     if reviewed in ('male','female'):
         gender = reviewed
     if voice:
@@ -135,14 +139,20 @@ def voice_for(c, scope, row, members, *, day=None):
         presets = [dict(p) for p in c.db.execute('SELECT id,name,gender,age FROM breeze_presets ORDER BY id')
                    if (not gender or p['gender']==gender) and (not age or p['age']==age)]
     if not presets:
+        if not binding and c.db.execute('SELECT 1 FROM breeze_presets LIMIT 1').fetchone():
+            hold(c,selection,scope,row,'现有音色与角色条件不匹配',expected=expected)
         raise ValueError('没有符合已确认条件的云端预设，请同步音色或手动选声')
     if c.meta('daily_cast_enabled') != '1':
         if not gender:
-            raise ValueError('角色性别证据不足，可启用角色分析或在任务库手动选声')
+            hold(c,selection,scope,row,'角色性别证据不足',expected=expected)
         pool = [p for p in presets if p['name']==row['speaker']] or [
             p for p in presets if age or p['age'] in ('young','middle_aged')] or presets
         index=int.from_bytes(hashlib.sha256(sid.encode()).digest()[:8],'big') % len(pool)
         with c.db:
+            c.db.execute('BEGIN IMMEDIATE')
+            c.progress.require(selection)
+            if pending(c,sid):
+                raise NeedsAudition('该角色正在等待任务库试音确认')
             c.db.execute('INSERT OR IGNORE INTO breeze_cast VALUES(?,?)',(sid,pool[index]['id']))
         return c.binding(sid)['voice'].removeprefix('breeze:')
     own = [r for r in members if r['speaker_id']==sid][:12]
@@ -186,8 +196,18 @@ def voice_for(c, scope, row, members, *, day=None):
         or not isinstance(result.get('personality'),str) or not result['personality'].strip()
         or not choice['gender'] or not choice['age']
         or (choice['gender'],choice['age'])!=(result.get('gender'),result.get('age'))):
-        raise ValueError('角色分析证据不足或音色不匹配，请在任务库点角色名选声')
+        # A previously confirmed voice stays fixed even if today's acting analysis is inconclusive.
+        if voice and c.meta('confirmed_cloud:'+sid) == 'breeze:'+voice:
+            choice = presets[0]
+            result = {'personality':'沿用已确认的角色声线，自然表达'}
+            citations = ['用户已确认音色']
+        else:
+            hold(c,selection,scope,row,'角色分析证据不足或音色不匹配',choice['id'] if choice else '',expected)
     with c.db:
+        c.db.execute('BEGIN IMMEDIATE')
+        c.progress.require(selection)
+        if pending(c,sid):
+            raise NeedsAudition('该角色正在等待任务库试音确认')
         c.db.execute('INSERT OR IGNORE INTO breeze_cast VALUES(?,?)',(sid,choice['id']))
         binding = c.binding(sid)
         if not binding or binding['voice'] != 'breeze:'+choice['id']:

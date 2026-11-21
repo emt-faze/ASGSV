@@ -3,6 +3,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+import sqlite3
 from threading import Event
 from time import monotonic
 
@@ -126,6 +127,8 @@ def choose_cloud_voice(catalog, sid, voice_id):
                 catalog.db.execute('UPDATE quest_cast_reviews SET roles=? WHERE quest_id=?',
                                    (json.dumps(roles, sort_keys=True), quest))
         catalog.db.execute('INSERT OR REPLACE INTO breeze_cast VALUES(?,?)', (sid, voice_id))
+        catalog.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('confirmed_cloud:'+sid,'breeze:'+voice_id))
+        catalog.db.execute('DELETE FROM audition_holds WHERE speaker_id=?',(sid,))
 
 
 def prepare_cast(catalog, scope, rows):
@@ -192,7 +195,8 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
                 raise ValueError('当前游戏版本的任务指纹尚未覆盖本任务')
         blocked=Counter()
         allowed = catalog.progress.allowed([scope], bool(config.get('allow_unknown_progress', False)))
-        for row in catalog.lines([scope]):
+        members = catalog.lines([scope])
+        for row in members:
             if row['id'] not in pending:
                 continue
             known=confirmed.get(row['id'])==row['fingerprint']
@@ -213,6 +217,30 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
                 continue
             eligible.append(row)
 
+        if catalog.cloud_only():
+            from wuwa_audition import pending as pending_audition
+            from wuwa_daily_cast import voice_for
+            decisions = {}
+            for row in eligible:
+                sid = row['speaker_id']
+                if sid in decisions or stop.is_set():
+                    continue
+                catalog.progress.require(selection)
+                waiting = pending_audition(catalog,sid)
+                reason = (waiting['reason']+' · 请在任务库试听确认') if waiting else ''
+                if not reason and not catalog.binding(sid):
+                    try:
+                        voice_for(catalog,scope,row,members)
+                    except ValueError as exc:
+                        reason = str(exc)
+                decisions[sid] = reason
+            excluded = {row['id'] for row in eligible if decisions.get(row['speaker_id'])}
+            for row in eligible:
+                if row['id'] in excluded:
+                    blocked[row['speaker']+' · '+decisions[row['speaker_id']]] += 1
+            direct -= excluded
+            single_lines = [row for row in single_lines if row['id'] not in excluded]
+            eligible = [row for row in eligible if row['id'] not in excluded]
         prepare_cast(catalog, scope, eligible)
         done = 0
         problems = []
@@ -247,15 +275,11 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
             except ValueError as exc:
                 problems.append(str(exc))
         # Ordinary side quests use the same verified single-line preparation as the daily queue.
-        members=catalog.lines([scope])
         for row in single_lines:
             catalog.progress.require(selection)
             if stop.is_set() or any('预算' in msg or 'API Key' in msg for msg in problems):
                 break
             try:
-                if catalog.cloud_only() and catalog.meta('daily_cast_enabled')=='1' and not catalog.binding(row['speaker_id']):
-                    from wuwa_daily_cast import voice_for
-                    voice_for(catalog,scope,row,members)
                 run_project(['flow:' + row['flow_id']], {row['id']}, single=True)
             except (OSError, ValueError) as exc:
                 problems.append(str(exc))
@@ -276,6 +300,7 @@ def generate_missing(root, scope, ids, stop, progress, on_ready=None, *, selecti
 
 class QuestLibrary(W.QWidget):
     voice_requested = C.Signal(object)
+    voice_confirmed = C.Signal()
     generate_requested = C.Signal(str, object)
     notice = C.Signal(str)
     line_ready = C.Signal(str,object)
@@ -410,7 +435,12 @@ class QuestLibrary(W.QWidget):
         self.generate.clicked.connect(self.primary_action)
         self.preview = AccentButton('试听当前句', 'play')
         self.preview.clicked.connect(self.preview_current)
+        self.audition_button = W.QPushButton('角色试音')
+        self.audition_button.setToolTip('用角色自己的台词比较声线，确认后用于配音')
+        self.audition_button.clicked.connect(self.open_auditions)
+        self.waiting_roles = []
         actions.addWidget(self.generate)
+        actions.addWidget(self.audition_button)
         actions.addWidget(self.preview)
         actions.addStretch()
         detail.addLayout(actions)
@@ -429,6 +459,7 @@ class QuestLibrary(W.QWidget):
             QLabel#questStatus {background:#253237; color:#ADBDC2; border-radius:9px; padding:1px 8px;}
             QLabel#questStatus[ready="true"] {background:#183B35; color:#86DEC1;}
         """)
+        self.refresh_auditions()
         self.update_actions()
         self.prev.setEnabled(False)
         self.next.setEnabled(False)
@@ -451,6 +482,7 @@ class QuestLibrary(W.QWidget):
 
     def check_catalog(self):
         self.account_button.sync()
+        self.refresh_auditions()
         inventory = self.catalog.root / 'sources/local-inventory.json'
         try:
             inventory_stamp = inventory.stat().st_mtime_ns
@@ -609,6 +641,7 @@ class QuestLibrary(W.QWidget):
 
     def account_changed(self):
         self.page_number = 0
+        self.refresh_auditions()
         self.set_work_status('当前游戏账号 · '+self.catalog.progress.label(self.catalog.progress.account))
         self.reload()
 
@@ -756,7 +789,7 @@ class QuestLibrary(W.QWidget):
                 state = '已生成' if r['id'] in self.audio else '成品录音' if r['id'] in self.pack_clips else '未生成'
                 for col,text in enumerate((r['speaker'],body,state)):
                     cell = W.QTableWidgetItem(text)
-                    cell.setToolTip('切换角色音色 · '+text if col==0 else text)
+                    cell.setToolTip('点击角色试听并选择声线 · '+text if col==0 else text)
                     if col==0:
                         cell.setForeground(G.QColor('#D8B467'))
                     self.lines.setItem(i,col,cell)
@@ -802,6 +835,8 @@ class QuestLibrary(W.QWidget):
             and (self.offer_worker is None or download)))
         self.preview.setEnabled(bool(not self.reader.isRunning() and 0 <= row < len(self.rows)
             and (self.rows[row]['id'] in self.audio or self.rows[row]['id'] in clips)))
+        self.audition_button.setEnabled(bool(self.waiting_roles or
+            (not self.busy and 0 <= row < len(self.rows) and 'raw_text' in self.rows[row].keys())))
 
     def generate_current(self):
         q = self.quests.get(self.scope)
@@ -829,4 +864,58 @@ class QuestLibrary(W.QWidget):
     def role_clicked(self, row, column):
         if column==0 and not self.busy and 0 <= row < len(self.rows):
             self.player.stop()
-            self.voice_requested.emit(self.rows[row])
+            entry = self.rows[row]
+            if self.catalog.cloud_only() and 'raw_text' in entry.keys():
+                self.open_trial(self.scope, entry['speaker_id'], entry['speaker'], entry['id'])
+            else:
+                self.voice_requested.emit(entry)
+
+    def refresh_auditions(self):
+        self.audition_button.setVisible(self.catalog.cloud_only())
+        self.waiting_roles = self.catalog.db.execute('''SELECT h.*, l.speaker, s.name AS quest_name
+            FROM audition_holds h LEFT JOIN lines l ON h.line_id=l.id
+            LEFT JOIN scopes s ON h.scope=s.id WHERE h.account=?
+            ORDER BY l.speaker,s.name,h.speaker_id''',(self.catalog.progress.account,)).fetchall()
+        count = len(self.waiting_roles)
+        self.audition_button.setText(f'待确认试音（{count}）' if count else '角色试音')
+        self.update_actions()
+
+    def open_auditions(self):
+        self.refresh_auditions()
+        if not self.waiting_roles:
+            self.role_clicked(self.lines.currentRow(),0)
+            return
+        if len(self.waiting_roles) == 1:
+            entry = self.waiting_roles[0]
+        else:
+            menu = W.QMenu(self)
+            roles = {entry['speaker_id']:entry for entry in self.waiting_roles}
+            selection = self.catalog.progress.selection
+            for entry in roles.values():
+                action = menu.addAction((entry['speaker'] or '未知角色')+' · '+(entry['quest_name'] or '未命名任务'))
+                action.setData(entry['speaker_id'])
+            selected = menu.exec(self.audition_button.mapToGlobal(self.audition_button.rect().bottomLeft()))
+            if not selected or selection != self.catalog.progress.selection:
+                return
+            entry = roles[selected.data()]
+        self.open_trial(entry['scope'],entry['speaker_id'],entry['speaker'] or '未知角色')
+
+    def open_trial(self, scope, sid, speaker, preferred_line=''):
+        from wuwa_audition import own_line, pending
+        from wuwa_voice_select import CloudVoiceDialog
+        self.player.stop()
+        try:
+            trial = own_line(self.catalog,scope,sid,preferred_line)
+            waiting = pending(self.catalog,sid)
+            dialog = CloudVoiceDialog(self.catalog,dict(speaker_id=sid,speaker=speaker),self,
+                trial=trial,preferred=waiting['candidate'] if waiting else '',reason=waiting['reason'] if waiting else '')
+        except (ValueError,OSError,sqlite3.Error) as exc:
+            self.set_work_status(str(exc))
+            return
+        if dialog.exec()==W.QDialog.Accepted:
+            self.requested_scope = self.scope
+            self.set_work_status('已记住'+speaker+'的声线，可继续生成。每日计划下次执行时会自动接续。')
+            self.refresh_auditions()
+            self.reload()
+            self.voice_confirmed.emit()
+        dialog.deleteLater()

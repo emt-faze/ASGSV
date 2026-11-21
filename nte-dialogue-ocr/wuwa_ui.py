@@ -480,6 +480,7 @@ class GameHome(W.QDialog):
         self.task_library.generate_requested.connect(self.generate_quest)
         self.task_library.notice.connect(lambda text: self.status.setText(text))
         self.roles = RoleVoices(self.catalog)
+        self.task_library.voice_confirmed.connect(self.roles.refresh)
         self.roles.edit_requested.connect(self.edit_voice)
         self.settings_page = W.QWidget()
         settings_layout = W.QVBoxLayout(self.settings_page)
