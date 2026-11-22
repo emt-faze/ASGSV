@@ -47,6 +47,10 @@ class BudgetPane(W.QWidget):
         for label,widget in [('配音服务',self.cloud),('普通支线',self.ordinary),('BreezeBlue 密钥',self.key),
                             ('每日预算',self.budget),('今日账本',self.usage),('',self.meter),('',self.save)]:
             form.addRow(label,widget)
+        self.backup = W.QPushButton('免费备用源 · 腾讯云与 TTSMaker')
+        self.backup.setToolTip('登记腾讯云免费资源包；TTSMaker 在单句试音中打开')
+        form.addRow('备用配音', self.backup)
+        self.backup.clicked.connect(self.configure_backup)
         self.save.clicked.connect(self.persist)
         self.update_usage(c)
 
@@ -56,6 +60,10 @@ class BudgetPane(W.QWidget):
         self.usage.setText(f'所有游戏账号今日共预留 {units/10:g} / {min(cap,400)} 积分')
         self.meter.setRange(0,max(1,min(cap,400)*10))
         self.meter.setValue(min(units,self.meter.maximum()))
+
+    def configure_backup(self):
+        from wuwa_free_tts_ui import TencentSettings
+        TencentSettings(self.dialog.c, self).exec()
 
     def persist(self):
         key=self.key.text().strip()

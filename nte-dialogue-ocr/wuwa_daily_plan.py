@@ -15,6 +15,7 @@ from wuwa_daily_precast import DailyCasting
 from wuwa_resources import inventory, resource_snapshot_current
 from wuwa_log_generation import export_cloud
 import wuwa_breeze as breeze
+import wuwa_free_voices as free_voices
 
 
 def initialize(c):
@@ -175,7 +176,8 @@ def _run(c, scheduled, dry, selected):
     made = 0
     deferred = False
     scanned_at = monotonic()
-    if limit <= 0:
+    if limit <= 0 and not (c.db.execute('SELECT 1 FROM free_tts_lines LIMIT 1').fetchone() or
+            (c.meta('fallback_tencent_owner') and c.db.execute('SELECT 1 FROM free_tts_cast LIMIT 1').fetchone())):
         raise ValueError('每日预算为 0，请在每日计划的「配音与预算」中填写当日积分上限。')
     casting = None
     if c.meta('daily_cast_enabled')=='1':
@@ -274,7 +276,8 @@ def _run(c, scheduled, dry, selected):
             if prior and prior[0]=='submitted':
                 counts['云端历史待核对，已防止重复扣费'] += 1
                 continue
-            if not prior and today_units(c)+2*len(spoken)>limit:
+            if (not prior and today_units(c)+2*len(spoken)>limit
+                    and not free_voices.available(c,row,vid,body,spoken)):
                 counts['等待次日预算'] += 1
                 continue
             prepare_cast(c,scope,[row])

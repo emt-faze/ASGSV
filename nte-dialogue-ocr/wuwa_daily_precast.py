@@ -5,6 +5,7 @@ from hashlib import sha256
 from PySide6.QtCore import QLockFile
 
 import wuwa_breeze as breeze
+import wuwa_free_voices as free_voices
 from wuwa_cast_review import original_problem, reviewed_roles
 from wuwa_daily_cast import CastingServiceError, DEFAULT_BASE, DEFAULT_MODEL, voice_for
 
@@ -96,6 +97,9 @@ class DailyCasting:
                 else:
                     self.lines[scope,identity] = (bound,direction,None)
                 return
+        if units>self.remaining and bound and free_voices.available(c,row,bound,body,spoken):
+            self.lines[scope,identity] = (bound,direction,direction)
+            return
         if units>self.remaining and sid not in self.speakers:
             return
         if (date.today().isoformat()!=self.day or c.meta('daily_cast_enabled')!='1'

@@ -54,6 +54,9 @@ class CloudVoiceDialog(W.QDialog):
             actions.addWidget(self.listen)
             actions.addWidget(self.swap)
             layout.addLayout(actions)
+            self.free = W.QPushButton('免费备用源 · 单句对比试听')
+            self.free.clicked.connect(self.open_free)
+            layout.addWidget(self.free)
             self.player = QMediaPlayer(self)
             self.output = QAudioOutput(self)
             self.player.setAudioOutput(self.output)
@@ -128,9 +131,18 @@ class CloudVoiceDialog(W.QDialog):
         item = self.list.currentItem()
         return item.data(C.Qt.UserRole) if item and not item.isHidden() else ''
 
+    def open_free(self):
+        from wuwa_free_tts_ui import FreeAudition
+        if self.worker:
+            return
+        self.player.stop()
+        if FreeAudition(self.c,self.trial,self.row['speaker'],self).exec()==W.QDialog.Accepted:
+            W.QDialog.accept(self)
+
     def update_sample_actions(self):
         voice = self.selected_voice()
         idle = self.worker is None
+        self.free.setEnabled(idle)
         self.listen.setEnabled(idle and bool(voice))
         count = sum(not self.list.item(i).isHidden() for i in range(self.list.count()))
         self.swap.setEnabled(idle and count > 1)

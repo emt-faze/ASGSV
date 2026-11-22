@@ -165,6 +165,12 @@ class Catalog:
             CREATE TABLE IF NOT EXISTS binding_origins(speaker_id TEXT PRIMARY KEY,origin TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS breeze_presets(id TEXT PRIMARY KEY,name TEXT NOT NULL,gender TEXT,age TEXT);
             CREATE TABLE IF NOT EXISTS breeze_cast(speaker_id TEXT PRIMARY KEY,voice_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS free_tts_cast(
+                speaker_id TEXT, primary_voice TEXT, tencent_voice INTEGER NOT NULL, PRIMARY KEY(speaker_id,primary_voice));
+            CREATE TABLE IF NOT EXISTS free_tts_lines(
+                line_id TEXT, primary_voice TEXT, speaker_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                body TEXT NOT NULL, spoken TEXT NOT NULL, provider TEXT NOT NULL, voice TEXT NOT NULL,
+                sha256 TEXT NOT NULL, PRIMARY KEY(line_id,primary_voice));
             CREATE TABLE IF NOT EXISTS audition_holds(
                 account TEXT NOT NULL, speaker_id TEXT NOT NULL, scope TEXT NOT NULL,
                 line_id TEXT NOT NULL, reason TEXT NOT NULL, candidate TEXT NOT NULL,

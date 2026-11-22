@@ -13,6 +13,7 @@ from prepared_playback import PreparedLine
 from wuwa_catalog import Catalog, resolve_text
 from wuwa_voices import local_voice_signature
 import wuwa_breeze as breeze
+import wuwa_free_voices as free_voices
 
 
 def projects(root):
@@ -31,7 +32,7 @@ def prepared_line(project, row):
     path=project.audio_path(row)
     if row.status=='done' and path:
         return PreparedLine(row.id,row.text,row.speaker,row.audio['voice'],path,row.audio['sha256'],
-                            not row.voice.startswith('system:'),row.source_id,row.voice,row.audio.get('cloud_voice',''))
+                            not row.voice.startswith('system:'),row.source_id,row.voice,row.audio.get('primary_cloud_voice',row.audio.get('cloud_voice','')))
     return None
 
 
@@ -42,6 +43,7 @@ def existing_audio(catalog,config,only=None):
     else:
         voice_paths(config['dubbing'])
     audio, runtime, signatures, used, held = {}, {}, {}, set(), []
+    alternate = {}
     version=catalog.local_version()
     for project in projects(catalog.root):
         for row in project.rows:
@@ -65,6 +67,10 @@ def existing_audio(catalog,config,only=None):
                 if not line:
                     continue
                 breeze.check_audio(line.path)
+                if row.audio.get('provider') in ('tencent','ttsmaker'):
+                    if free_voices.valid_project(catalog,source,row.text,line.cloud_voice,row.audio):
+                        alternate.setdefault(key, (line,str(project.directory)))
+                    continue
                 if line.cloud_voice:
                     from wuwa_cast_review import original_problem
                     if original_problem(catalog,source['speaker_id'],line.cloud_voice):
@@ -89,6 +95,12 @@ def existing_audio(catalog,config,only=None):
                 used.add(str(project.directory))
             except (OSError,ValueError,KeyError) as exc:
                 held.append(dict(reason=str(exc),project=str(project.directory)))
+    for key,(line,directory) in alternate.items():
+        if key not in audio:
+            audio[key] = line
+            used.add(directory)
+    for key,line in free_voices.approved_clips(catalog,config,only):
+        audio.setdefault(key,line)
     return audio,sorted(used),held
 
 
@@ -105,16 +117,43 @@ def export_cloud(catalog, project, entry, cloud_voice, still_current, stop, lock
     direction=breeze.line_direction(catalog,entry.source_id,cloud_voice)
     spoken=breeze.spoken_text(entry.text,catalog.root)
     options = {} if max_daily_credits is None else {'max_daily_credits': max_daily_credits}
-    cached,hit=breeze.cached_wav(catalog,entry.text,cloud_voice,reviewed_and_current,direction,spoken=spoken,**options)
+    primary_key = breeze.recipe(entry.text,cloud_voice,direction,spoken=spoken)
+    source = catalog.db.execute('SELECT * FROM lines WHERE id=?',(entry.source_id,)).fetchone()
+    def fallback_current():
+        return (not stop.is_set() and source is not None and source['fingerprint'] == entry.evidence.get('fingerprint')
+                and reviewed_and_current() and free_voices.primary_voice(catalog,source['speaker_id'])==cloud_voice)
+    alternate = None
+    if (source and catalog.db.execute('SELECT 1 FROM free_tts_lines WHERE line_id=? AND primary_voice=?',(entry.source_id,cloud_voice)).fetchone()
+            and not catalog.db.execute('SELECT 1 FROM breeze_calls WHERE cache_key=?',(primary_key,)).fetchone()
+            and fallback_current()):
+        alternate = free_voices.accepted(catalog,source,cloud_voice,entry.text,spoken)
+    if alternate:
+        cached, hit = alternate.path, True
+    else:
+        try:
+            cached,hit=breeze.cached_wav(catalog,entry.text,cloud_voice,reviewed_and_current,direction,spoken=spoken,**options)
+        except breeze.PrimaryUnavailable:
+            option = free_voices.secondary(catalog,source,cloud_voice,entry.text,spoken,fallback_current) if source else None
+            if not option:
+                raise
+            alternate,hit = option
+            cached = alternate.path
     folder=project.directory/'audio'
     folder.mkdir(exist_ok=True)
     stage=folder/('.'+uuid4().hex+'.wav')
     try:
         shutil.copyfile(cached,stage)
         label = catalog.db.execute('SELECT name FROM breeze_presets WHERE id=?',(cloud_voice,)).fetchone()
-        info=dict(tts_text=spoken,cache_key=breeze.recipe(entry.text,cloud_voice,direction,spoken=spoken),input_key=entry.input_key(project.mode),
+        info=dict(tts_text=spoken,cache_key=primary_key,input_key=entry.input_key(project.mode),
             voice='BreezeBlue · '+(label[0] if label else entry.speaker),provider='breezeblue',cloud_voice=cloud_voice,
             cache_hit=hit,generated_at=timestamp())
+        if alternate:
+            if not fallback_current():
+                raise ValueError('台词或备用绑定已变化，录音保留在缓存中')
+            info.pop('cloud_voice')
+            info.update(primary_cloud_voice=cloud_voice,secondary_voice=alternate.voice,provider=alternate.provider,
+                        voice=alternate.label,cache_key=hashlib.sha256(
+                            (alternate.provider+':'+alternate.voice+':'+alternate.sha).encode()).hexdigest())
         _publish_export(project,entry,stage,info,stop,lock)
         entry.status,entry.error='done',''
         project.save()

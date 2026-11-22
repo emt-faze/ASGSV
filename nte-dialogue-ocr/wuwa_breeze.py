@@ -69,6 +69,10 @@ def set_pairing(catalog,speaker_id,local_voice,cloud_voice):
                                (speaker_id,local_voice))
 
 
+class PrimaryUnavailable(ValueError):
+    """The primary service did not accept or charge this synthesis request."""
+
+
 class AudioQualityError(ValueError):
     pass
 
@@ -243,12 +247,12 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoke
         if not allow_charge():
             raise ValueError('字幕或声线已变化，已跳过云端补录')
         if not limit or spent+units>limit:
-            raise ValueError('BreezeBlue 今日预算不足')
+            raise PrimaryUnavailable('BreezeBlue 今日预算不足')
         if not 1<=len(spoken)<=1000:
             raise ValueError('台词超出云端单次长度')
         secret=api_key()
         if not secret:
-            raise ValueError('请在每日计划的「配音与预算」中填写 BreezeBlue API Key')
+            raise PrimaryUnavailable('请在每日计划的「配音与预算」中填写 BreezeBlue API Key')
         db.execute("INSERT INTO breeze_calls VALUES(?,?,?,'submitted',NULL)",(key,today,units))
         db.commit()
     except BaseException:
@@ -280,7 +284,8 @@ def cached_wav(catalog,text,cloud_voice,allow_charge,direction=DIRECTION,*,spoke
         if exc.code in (400,401,402,403,404,422,429):
             with db:
                 db.execute("DELETE FROM breeze_calls WHERE cache_key=?",(key,))
-        raise ValueError(f'BreezeBlue HTTP {exc.code}，请检查密钥、音色或额度') from None
+        error = PrimaryUnavailable if exc.code in (401,402,403,429) else ValueError
+        raise error(f'BreezeBlue HTTP {exc.code}，请检查密钥、音色或额度') from None
     finally:
         staging.unlink(missing_ok=True)
 

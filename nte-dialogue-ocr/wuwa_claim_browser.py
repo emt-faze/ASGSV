@@ -1,5 +1,6 @@
 """Use the official daily gift button in a dedicated, per-user browser profile."""
 from dataclasses import dataclass
+from decimal import Decimal
 import importlib
 import os
 from pathlib import Path
@@ -154,7 +155,7 @@ def open_login(*, keys=False):
     launch_login(URL + '/api-keys' if keys else URL)
     if keys:
         return '请创建或复制自己的 API Key，关闭该专用窗口，在本页粘贴后点击一键开启。'
-    return '请在专用浏览器 登录与配音密钥相同的账号，看到开发者控制台后关闭这个专用窗口。'
+    return '请在专用领取页查看「每日奖励」，按官网提示登录或完成验证。关闭该窗口后可核对到账。'
 
 
 def wait_for_login():
@@ -190,7 +191,7 @@ def wait_for_login():
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired as exc:
         raise LoginRequired('专用窗口仍在等待登录。完成登录后关闭该窗口，再点「立即领取 / 核对到账」。') from exc
-    website_claim()  # Confirm the logged-in page before reporting success.
+    # The caller checks the ledger and the signed-in page after this window closes.
 
 
 def driver_path():
@@ -246,57 +247,196 @@ def ensure_driver():
         lock.unlock()
 
 
-GIFT = re.compile(
-    r'^(?:领取(?:每日|今日|每天)\s*(?:免费|赠送)?\s*(?:400\s*(?:个)?\s*)?(?:积分|点数|额度|奖励|credits?)|'
-    r'(?:每日|今日|每天)\s*(?:免费)?(?:领取|签到)(?:\s*[+＋]?\s*400\s*(?:积分|credits?)?)?|'
-    r'claim (?:your )?(?:(?:daily|free|400) )+(?:credits?|reward|gift|bonus))$', re.I)
-DONE = re.compile(r'(?:今日已领取|今天已领取|今日已签到|今日已领完|already claimed today|claimed today)', re.I)
-SHORT = re.compile(r'^(?:领取|立即领取|签到|领取\s*(?:免费|赠送)?\s*(?:400\s*(?:个)?\s*)?(?:积分|点数|额度|奖励|credits?)|claim(?: now)?)$', re.I)
-GIFT_AREA = re.compile(r'(?=.*(?:每日|每天|今日|daily))(?=.*(?:400|赠送积分|免费积分|free credits))', re.I | re.S)
+# The profile entry opens an offer. Only the redemption button inside that
+# offer starts an attempt; other credits and purchases share this page.
+OFFER = re.compile(r'(?=.*(?:每日|今日|每天|daily))(?=.*(?:积分|credits?|奖励|reward))', re.I | re.S)
+PROFILE = re.compile(r'^(?:修改资料|edit profile)$', re.I)
+ENTRY = re.compile(r'^(?:领取每日积分|claim daily credits)$', re.I)
+CONFIRM = re.compile(r'^(?:确认领取|确定领取|confirm claim|confirm redemption)$', re.I)
+REDEEM = re.compile(r'^(?:立即领取|确认领取|确定领取|领取|签到|(?:立即)?领取\s*(?:每日|今日|免费|赠送)?\s*[+＋]?\s*\d+\s*(?:个)?\s*(?:积分|点数)|claim(?: now)?|claim (?:my |your )?(?:daily reward|free credits)|confirm claim|confirm redemption)$', re.I)
+RECEIVED = re.compile(r'^(?:[+＋]?\s*\d[\d,]*\s*积分已到账(?:[。！!]|$)|[✓✔🎉\s]*(?:领取成功|签到成功|(?:今日|今天|本轮)已(?:经)?(?:领取|签到|领完)|已领取(?:今日|今天|本轮|每日)奖励|(?:每日奖励|积分)已(?:领取|到账))|(?:daily (?:reward|credits?) )?(?:already claimed|successfully claimed|claimed today)|you(?: have| already|\x27ve) (?:already )?claimed (?:your |the )?daily)', re.I)
+REJECTION = re.compile(r'^(?:领取失败|签到失败|积分领取失败|无法领取|请求过于频繁|操作过于频繁|网络(?:异常|错误)|(?:failed|unable) to claim|claim failed|too many requests|network error)', re.I)
+CHALLENGE = re.compile(r'验证您是(?:人类|真人)|(?:请|需要)完成人机验证|verify (?:that )?you are human|human verification', re.I)
+RESET = re.compile(r'(?:后可领取下一轮|下次领取倒计时|距下次领取|next claim in|until (?:the )?next claim)', re.I)
+
+
+class HumanVerificationRequired(ValueError):
+    """The provider asks the account holder to complete an interactive step."""
+
+
+class RewardAmountUnclear(ValueError):
+    """The offer does not establish that this account can redeem exactly 400 credits."""
 
 
 class AmbiguousGift(ValueError):
-    """The page has not presented a unique daily offer yet."""
+    """The page has not presented a unique daily offer."""
 
 
-def gift_button(page):
-    """Short labels such as '领取' must belong to a visible daily credits offer."""
-    primary = page.get_by_role('button', name=re.compile(r'^(?:领取每日积分|claim daily credits)$', re.I))
-    if primary.count() == 1 and primary.is_visible():
-        return primary
-    buttons = page.get_by_role('button', name=GIFT)
-    matches = [b for b in buttons.all() if b.is_visible()]
-    for button in page.get_by_role('button', name=SHORT).all():
-        if not button.is_visible():
-            continue
-        context = button
-        for _ in range(4):
-            context = context.locator('xpath=parent::*[not(self::html or self::body)]')
-            if not context.count():
-                break
-            summary = context.inner_text(timeout=1500)
-            if len(summary) > 520:
-                break
-            if GIFT_AREA.search(summary) and context.get_by_role('button', name=SHORT).count() == 1:
-                matches.append(button)
-                break
+def visible(locator):
+    return [item for item in locator.all() if item.is_visible()]
+
+
+def gift_offer(page, names=REDEEM):
+    """Locate one redemption button inside a visible daily reward offer."""
+    dialogs = [d for d in visible(page.get_by_role('dialog')) if OFFER.search(d.inner_text(timeout=1800))]
+    if len(dialogs) > 1:
+        raise AmbiguousGift('官网同时显示了多个每日奖励面板，请打开专用领取页核对。')
+    if dialogs:
+        matches = [(button, dialogs[0]) for button in visible(dialogs[0].get_by_role('button', name=names))]
+    else:
+        matches = []
+        for button in visible(page.get_by_role('button', name=names)):
+            region = button
+            for _ in range(5):
+                region = region.locator('xpath=parent::*[not(self::html or self::body or self::main)]')
+                if not region.count():
+                    break
+                label = region.inner_text(timeout=1800)
+                if len(label) > 600 or region.get_by_role('navigation').count():
+                    break
+                if OFFER.search(label):
+                    if len(visible(region.get_by_role('button', name=names))) == 1:
+                        matches.append((button, region))
+                    break
     if len(matches) > 1:
-        raise AmbiguousGift('网页上有多个领取入口，请在专用浏览器 核对当日赠送。')
+        raise AmbiguousGift('官网同时显示了多个领取按钮，请打开专用领取页核对。')
     return matches[0] if matches else None
 
 
-def cooling_down(page):
-    caption = page.get_by_text(re.compile(r'^(下次领取倒计时|next claim in)$', re.I))
-    if not caption.count() or not caption.first.is_visible():
-        return False
-    duration = caption.first.locator('..').inner_text(timeout=1500)
-    return any(int(n) > 0 for n in re.findall(r'(\d+)\s*(?:[hms]\b|小时|分钟|秒)', duration, re.I))
+AMOUNTS = re.compile(r'(?<![\d.,])(?:[+＋]\s*)?(\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*(?:个\s*)?(?:积分|credits?\b)', re.I)
+MEMBER = re.compile(r'^\s*Discord\s*(?:成员|會員|会员|member)\s*$', re.I)
+PERSONAL_AMOUNT = re.compile(r'(?:本(?:次|轮)|你(?:今日|今天)|您(?:今日|今天))\s*(?:可(?:以)?|将)?领(?:取)?\s*[+＋]?\s*400\s*积分|(?:you can claim|your reward is)\s*[+]?\s*400\s*credits?', re.I)
+PRICED_BUTTON = re.compile(r'^(?:立即|确认|确定)?领取\s*(?:每日|今日|免费|赠送)?\s*[+＋]?\s*400\s*(?:个)?\s*积分$|^claim\s*[+]?\s*400\s*credits?$', re.I)
 
 
-def website_claim(before_click=None):
+def require_full_reward(text, member, action, *, confirmation=False):
+    amounts = {Decimal(s.replace(',', '').replace('，', '')) for s in AMOUNTS.findall(text)}
+    if amounts == {400} and (member or PERSONAL_AMOUNT.search(text) or PRICED_BUTTON.fullmatch(action.strip()) or confirmation):
+        return
+    shown = '、'.join(format(n, 'f') for n in sorted(amounts, reverse=True))
+    detail = f'领取卡列出 {shown} 积分' if shown else '领取卡没有标明金额'
+    raise RewardAmountUnclear(f'已停在领取前 · {detail}，无法确认本账号本次可领 400 积分。'
+                            '请在官网奖励卡核对「Discord 成员」和单一 +400 后重试。')
+
+
+def check_reward_amount(offer, *, confirmation=False):
+    button, region = offer
+    require_full_reward(region.inner_text(timeout=1800), bool(visible(region.get_by_text(MEMBER))),
+                        button.get_attribute('aria-label') or button.inner_text(), confirmation=confirmation)
+
+
+def website_notice(page):
+    if visible(page.get_by_text(CHALLENGE)) or visible(page.locator(
+            'iframe[src*="challenges.cloudflare.com"], iframe[title*="human verification" i], '
+            'iframe[title*="人机验证"]')):
+        raise HumanVerificationRequired('官网要求本人验证。请打开专用领取页，完成验证后核对到账。')
+    refused = visible(page.get_by_text(REJECTION))
+    if refused:
+        raise ValueError('官网提示：' + ' '.join(refused[0].inner_text().split())[:140])
+    if visible(page.get_by_text(RECEIVED)):
+        return 'already'
+    return None
+
+
+def claim_on_page(page, before_click, *, offer_timeout=20, feedback_timeout=8):
+    until = time.monotonic() + offer_timeout
+    menu_opened = False
+    offer_opened = False
+    saw_reset = False
+    unclear = None
+    while time.monotonic() < until:
+        address = urlsplit(page.url)
+        if address.hostname != 'breezeblue.ai' or '/auth/' in address.path or '/login' in address.path:
+            raise LoginRequired('请在专用领取页登录与配音密钥相同的 BreezeBlue 账号。')
+        if website_notice(page):
+            return 'already'
+        offer = gift_offer(page)
+        button = offer[0] if offer else None
+        if button is not None and button.is_enabled():
+            try:
+                check_reward_amount(offer)
+            except RewardAmountUnclear as exc:
+                unclear = exc
+                # The welcome dialog can advertise two tiers. Check the signed-in
+                # account menu for a personal offer before deciding eligibility.
+                if not menu_opened:
+                    close = visible(page.get_by_role('button', name=re.compile(r'^(?:关闭每日奖励|close daily reward)$', re.I)))
+                    if len(close) == 1:
+                        close[0].click(timeout=3500)
+                    profile = visible(page.get_by_role('button', name=PROFILE))
+                    if len(profile) == 1:
+                        profile[0].click(timeout=3500)
+                        menu_opened = True
+                page.wait_for_timeout(300)
+                continue
+            if before_click is None:
+                return 'available'
+            button.click(trial=True, timeout=3500)
+            # A second click is allowed only on a newly presented, distinctly
+            # labelled confirmation, never on a lingering redemption button.
+            confirm_visible = gift_offer(page, CONFIRM) is not None
+            check_reward_amount(offer)
+            before_click()
+            button.click(timeout=3500)
+            until_feedback = time.monotonic() + feedback_timeout
+            while time.monotonic() < until_feedback:
+                if website_notice(page):
+                    return 'acknowledged'
+                if not confirm_visible:
+                    confirmation = gift_offer(page, CONFIRM)
+                    if confirmation and confirmation[0].is_enabled():
+                        check_reward_amount(confirmation, confirmation=True)
+                        confirm_visible = True
+                        confirmation[0].click(timeout=3500)
+                page.wait_for_timeout(250)
+            return 'unconfirmed'
+        # A countdown for the *next* round also appears with an active claim.
+        saw_reset = bool(visible(page.get_by_text(RESET)))
+        if button is None and not menu_opened:
+            profile = visible(page.get_by_role('button', name=PROFILE))
+            if len(profile) == 1:
+                profile[0].click(timeout=3500)
+                menu_opened = True
+                continue
+        if button is None and menu_opened and not offer_opened:
+            entries = visible(page.get_by_role('button', name=ENTRY))
+            if len(entries) == 1 and (entries[0].get_attribute('aria-haspopup') or
+                                       entries[0].get_attribute('aria-expanded') == 'false'):
+                entries[0].click(timeout=3500)
+                offer_opened = True
+                continue
+        page.wait_for_timeout(300)
+    if unclear is not None:
+        raise unclear
+    if saw_reset:
+        return 'unavailable'
+    raise ValueError('官网没有显示可用的每日奖励领取按钮。请打开专用领取页查看账号的领取条件。')
+
+
+def match_dedicated_account(page, prefix, *, timeout=15):
+    """Match the saved dubbing key to its masked row on the official key list."""
+    if not isinstance(prefix, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,32}', prefix):
+        raise ValueError('缺少可核对的官网密钥标识，已停止领取。')
+    masked = re.compile(r'(?<![A-Za-z0-9_-])' + re.escape(prefix) + r'(?![A-Za-z0-9_-])')
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        address = urlsplit(page.url)
+        if (address.scheme, address.netloc, address.path.rstrip('/')) != ('https', 'breezeblue.ai', '/zh/app/developer/api-keys'):
+            raise LoginRequired('请在专用领取页登录与配音密钥相同的 BreezeBlue 账号。')
+        website_notice(page)
+        matches = visible(page.get_by_role('table').get_by_role('cell').filter(has_text=masked))
+        if len(matches) == 1:
+            return
+        if len(matches) > 1:
+            raise ValueError('官网密钥列表中出现多个相同标识，已停止领取。')
+        page.wait_for_timeout(250)
+    raise ValueError('专用浏览器的官网密钥列表未能匹配当前配音密钥，已停止领取。')
+
+
+def website_claim(before_click=None, *, expected_prefix=None):
     browser = select_browser()
     if not (browser.profile / 'Default').is_dir():
-        raise LoginRequired('请先登录 BreezeBlue 的专用浏览器 窗口。')
+        raise LoginRequired('请在专用领取页登录 BreezeBlue。')
     ensure_driver()
     driver = browser_driver()
     with driver.sync_playwright() as pw:
@@ -304,69 +444,16 @@ def website_claim(before_click=None):
             ctx = pw.chromium.launch_persistent_context(str(browser.profile), headless=True,
                         timeout=30000, **browser.launch_options())
         except driver.Error as exc:
-            raise ValueError('专用浏览器 未能启动。请关闭专用登录窗口后重试。') from exc
+            raise ValueError('专用浏览器未能启动。请关闭专用登录窗口后重试。') from exc
         try:
             page = ctx.new_page()
-            reply = page.goto(URL, wait_until='domcontentloaded', timeout=45000)
+            address = URL + '/api-keys' if before_click is not None else URL
+            reply = page.goto(address, wait_until='domcontentloaded', timeout=45000)
             if reply and reply.status >= 400:
-                raise ValueError(f'开发者页面返回 HTTP {reply.status}，请在专用浏览器 检查连接或登录状态。')
-            menu_opened = False
-            ambiguous = False
-            ready_since = None
-            until = time.monotonic() + 20
-            while time.monotonic() < until:
-                url = urlsplit(page.url)
-                if url.hostname != 'breezeblue.ai' or '/auth/' in url.path or '/login' in url.path:
-                    raise LoginRequired('专用账户需要重新登录，请打开专用浏览器。')
-                if page.get_by_text(re.compile(r'验证您是人类|验证您是真人|verify you are human', re.I)).first.is_visible():
-                    raise LoginRequired('网站要求人工验证，请在专用浏览器 完成。')
-                if page.get_by_text(DONE).first.is_visible() or cooling_down(page):
-                    return 'already'
-                try:
-                    button = gift_button(page)
-                    ambiguous = False
-                except AmbiguousGift:
-                    ambiguous = True
-                    ready_since = None
-                    page.wait_for_timeout(300)
-                    continue
-                if button is None and not menu_opened:
-                    avatar = page.get_by_role('button', name=re.compile(r'^(修改资料|edit profile)$', re.I))
-                    if avatar.count() == 1 and avatar.is_visible():
-                        avatar.click(timeout=3500)
-                        menu_opened = True
-                        continue
-                if button is not None and button.is_enabled():
-                    if ready_since is None:
-                        ready_since = time.monotonic()
-                    if time.monotonic() - ready_since < 1.2:
-                        page.wait_for_timeout(250)
-                        continue
-                    if before_click is None:
-                        return 'available'
-                    button.click(trial=True, timeout=3500)
-                    before_click()
-                    button.click(timeout=3500)
-                    # Some site versions open a separate daily-gift confirmation.
-                    confirmed = False
-                    deadline = time.monotonic() + 6
-                    while time.monotonic() < deadline:
-                        if page.get_by_text(DONE).first.is_visible() or cooling_down(page):
-                            break
-                        if not confirmed:
-                            dialog = page.get_by_role('dialog').filter(has_text=GIFT_AREA)
-                            if dialog.count() == 1 and dialog.is_visible():
-                                final = gift_button(dialog)
-                                if final is not None and final.is_enabled():
-                                    final.click(timeout=3500)
-                                    confirmed = True
-                        page.wait_for_timeout(250)
-                    return 'submitted'
-                ready_since = None
-                page.wait_for_timeout(400)
-            if ambiguous:
-                raise AmbiguousGift('网页持续显示多个领取入口，请在专用浏览器 核对。')
-            raise ValueError('未找到可领取的每日赠送按钮。请在专用浏览器 检查页面或登录状态。')
+                raise ValueError(f'开发者页面返回 HTTP {reply.status}，请在专用领取页检查连接或登录状态。')
+            if before_click is not None:
+                match_dedicated_account(page, expected_prefix)
+            return claim_on_page(page, before_click)
         except driver.Error as exc:
             detail = str(exc).splitlines()[0][:150]
             raise ValueError('无法完成网页领取 · ' + detail) from exc

@@ -12,19 +12,28 @@ def mount_signature(inventory):
     return sorted([Path(m['path']).relative_to(base).as_posix(), m['sha256']] for m in inventory['mounts'])
 
 
+def active_quest_state(root):
+    from wuwa_update import quest_state
+    from wuwa_community import selections
+    return {**quest_state(root), **selections(root)}
+
+
 def load_pack(root, *, allow_missing_audio=False):
-    from wuwa_update import quest_state, HASH
+    from wuwa_update import HASH
     if not (root/'sources/local-inventory.json').is_file():
         return {}
     inventory=json.loads((root/'sources/local-inventory.json').read_bytes())
     signature=mount_signature(inventory)
     result=_load_folder(root/'voice-pack',signature,allow_missing_audio)
-    for scope,entry in quest_state(root).items():
+    for scope,entry in active_quest_state(root).items():
         if not HASH.fullmatch(entry['folder']):
             raise ValueError('任务配音快照编号无效')
         folder=root/'updates'/entry['folder']
         newer=_load_folder(folder,signature,allow_missing_audio)
         if newer:
+            if entry.get('community'):
+                for row, _ in newer.values():
+                    row['community'] = entry['community']
             result={k:v for k,v in result.items() if v[0]['quest']!=scope}
             conflicts=result.keys() & newer.keys()
             if conflicts:
@@ -35,9 +44,9 @@ def load_pack(root, *, allow_missing_audio=False):
 
 def installed_previews(root):
     """Task library auditions use the signed, installed WAV even before game detection."""
-    from wuwa_update import quest_state, HASH
+    from wuwa_update import HASH
     result = {}
-    for scope, state in quest_state(root).items():
+    for scope, state in active_quest_state(root).items():
         if not HASH.fullmatch(state['folder']):
             raise ValueError('任务配音快照编号无效')
         folder = root / 'updates' / state['folder']
@@ -45,6 +54,9 @@ def installed_previews(root):
         clips = {clip.catalog_id:(row, clip) for row, clip in rows.values()
                  if row['quest'] == scope and clip.path.is_file()}
         if clips:
+            if state.get('community'):
+                for row, _ in clips.values():
+                    row['community'] = state['community']
             result[scope] = state['revision'], clips
     return result
 
@@ -86,6 +98,9 @@ def pack_matches(catalog, rows, entry, clip):
                            and source['fingerprint']==entry['fingerprint']
                            and source['voice_status']!='voiced'
                            and not (source['voice_status']=='unknown' and source['reviewed_at']))
+    if entry.get('community'):
+        # The listener explicitly chose this author's complete rendition for this quest.
+        return matches
     binding = catalog.binding(entry['speaker_id'])
     explicit = catalog.db.execute('SELECT 1 FROM binding_origins WHERE speaker_id=?',
                                   (entry['speaker_id'],)).fetchone()

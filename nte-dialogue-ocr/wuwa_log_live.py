@@ -177,8 +177,8 @@ class LogWorker(QtCore.QThread):
             inventory(config['install_root'],self.root)
             catalog=Catalog(self.root)
             self.version=catalog.local_version()
-            from wuwa_update import quest_state
-            packs=quest_state(self.root)
+            from wuwa_voice_pack import active_quest_state
+            packs=active_quest_state(self.root)
             index_revision=catalog.meta('index_revision')
             self.pack=load_pack(self.root)
             settings,_=playback_settings(config['dubbing'])
@@ -241,7 +241,7 @@ class LogWorker(QtCore.QThread):
                             if subtitle==last:
                                 stamp=decision
                         if subtitle!=last:
-                            active=quest_state(self.root)
+                            active=active_quest_state(self.root)
                             if active!=packs:
                                 self.pack=load_pack(self.root)
                                 packs=active

@@ -326,6 +326,7 @@ class QuestLibrary(W.QWidget):
         self.offer_source = None
         self.last_check = 0
         self.download_stop = Event()
+        self.community_dialog = None
         self.quests, self.audio, self.packed = {}, {}, {}
         self.rows = []
         self.scope = None
@@ -363,6 +364,9 @@ class QuestLibrary(W.QWidget):
         self.pills[0].setChecked(True)
         group.idClicked.connect(self.filter_changed)
         filters.addStretch()
+        self.community_button = W.QPushButton('社区配音')
+        self.community_button.setToolTip('比较玩家的配音、下载试听或分享自己的录音')
+        self.community_button.clicked.connect(self.open_community)
         self.daily_plan_button = W.QPushButton('每日配音计划')
         self.daily_plan_button.clicked.connect(self.open_daily_plan)
         self.account_button = GameAccountButton(catalog, self)
@@ -375,6 +379,7 @@ class QuestLibrary(W.QWidget):
         filters.addWidget(self.discovered_only)
         filters.addWidget(self.account_button)
         filters.addWidget(self.daily_plan_button)
+        filters.addWidget(self.community_button)
         self.search = W.QLineEdit()
         self.search.setPlaceholderText('搜索任务名称')
         self.search.setAccessibleName('搜索任务名称')
@@ -480,6 +485,37 @@ class QuestLibrary(W.QWidget):
         header.setSectionResizeMode(stretch, W.QHeaderView.Stretch)
         return table
 
+    def open_community(self):
+        from wuwa_community_ui import CommunityDialog
+        if self.community_dialog is not None:
+            self.community_dialog.raise_()
+            self.community_dialog.activateWindow()
+            return
+        dialog = CommunityDialog(self, self.scope)
+        self.community_dialog = dialog
+        dialog.listen.connect(self.listen_community)
+        dialog.installed.connect(self.community_changed)
+        dialog.finished.connect(self.close_community)
+        dialog.show()
+
+    def listen_community(self, path):
+        self.player.stop()
+        self.player.setSource(C.QUrl.fromLocalFile(str(path)))
+        self.player.play()
+
+    def community_changed(self, scope):
+        self.requested_scope = scope
+        self.reload()
+
+    def close_community(self):
+        current = self.player.source().toLocalFile()
+        if current and Path(current).parent == self.catalog.root/'updates/community-samples':
+            self.player.stop()
+            self.player.setSource(C.QUrl())
+        if self.community_dialog:
+            self.community_dialog.deleteLater()
+        self.community_dialog = None
+
     def check_catalog(self):
         self.account_button.sync()
         self.refresh_auditions()
@@ -511,7 +547,11 @@ class QuestLibrary(W.QWidget):
         self.closing = True
         self.catalog_poll.stop()
         self.player.stop()
+        self.player.setSource(C.QUrl())
         self.download_stop.set()
+        if self.community_dialog and self.community_dialog.worker:
+            self.community_dialog.stop.set()
+            self.community_dialog.worker.wait()
         for worker in (self.offer_worker, self.pack_worker):
             if worker is not None:
                 worker.wait()
@@ -591,7 +631,10 @@ class QuestLibrary(W.QWidget):
 
     def available_offer(self):
         offer = self.offers.get(self.scope)
-        if offer and self.installed.get(self.scope, (0, {}))[0] < offer['revision']:
+        revision, active = self.installed.get(self.scope, (0, {}))
+        if active and next(iter(active.values()))[0].get('community'):
+            return None
+        if offer and revision < offer['revision']:
             return offer
         return None
 
@@ -848,9 +891,11 @@ class QuestLibrary(W.QWidget):
         row = self.lines.currentRow()
         if not 0 <= row < len(self.rows):
             return
-        clip = self.audio.get(self.rows[row]['id'])
-        if clip is None and self.rows[row]['id'] in self.pack_clips:
-            clip = self.pack_clips[self.rows[row]['id']][1]
+        ident = self.rows[row]['id']
+        clip = self.audio.get(ident)
+        packed = self.pack_clips.get(ident)
+        if packed and (clip is None or packed[0].get('community')):
+            clip = packed[1]
         if not clip:
             return
         if not clip.path.is_file() or file_digest(clip.path) != clip.sha256:

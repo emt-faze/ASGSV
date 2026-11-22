@@ -1,0 +1,9 @@
+main:
+  "crontab: */15 * * * *":
+    - name: 校验社区配音投稿
+      docker:
+        image: python:3.12-bookworm
+      stages:
+        - name: 检查待处理的私密投稿
+          script: bash community/sync.sh
+

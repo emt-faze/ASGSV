@@ -6,8 +6,27 @@ from PySide6 import QtCore as C, QtWidgets as W
 
 from wuwa_breeze import api_key, save_key
 from wuwa_claim_browser import open_login, prepare_browser
-from wuwa_daily_claim import read_ledger, read_record, run, status_path
+from wuwa_daily_claim import account_scope, probe_member, read_ledger, read_record, run, status_path
 from wuwa_daily_scheduler import manage, python_path
+
+
+def result_text(state, scope):
+    if not state:
+        return '尚未核对'
+    checked = state.get('checked_at', '')[:19].replace('T', ' ')
+    prefix = checked + ' · ' if checked else ''
+    if state.get('account') and state['account'] != scope:
+        return '当前配音密钥尚无核对记录，请点击「立即领取 / 核对到账」。'
+    if state.get('status') in ('credited', 'credited_other'):
+        if not state.get('account') or not state.get('receipt') or not state.get('credited_at'):
+            return prefix + '历史记录需要重新核对，请点击「立即领取 / 核对到账」。'
+        paid = state['credited_at'][:19].replace('T', ' ')
+        target = '（本期目标 400 积分）' if state['amount'] != 400 else ''
+        origin = 'ASGSV 自动领取' if state.get('origin') == 'asgsv' else '已核对已有流水'
+        return f"{prefix}{origin} · 已到账 {state['amount']:g} 积分{target}\n入账时间 {paid} · 流水尾号 {state['receipt'][-6:]}"
+    if state.get('status') == 'pending' and not state.get('account'):
+        return prefix + '尚未到账 · 上次操作没有对应的赠送流水，可重新领取或核对。'
+    return prefix + state.get('message', '尚未核对')
 
 
 class ClaimPane(W.QWidget):
@@ -28,19 +47,25 @@ class ClaimPane(W.QWidget):
         self.key.setPlaceholderText('已保存的密钥自动复用，首次使用可在这里粘贴')
         self.get_key = W.QPushButton('获取密钥')
         self.get_key.clicked.connect(lambda: dialog.start(lambda _: open_login(keys=True), dialog.feedback.setText, '正在准备浏览器并打开 BreezeBlue 密钥页面…'))
-        self.login = W.QPushButton('重新登录专用浏览器')
+        self.login = W.QPushButton('打开官网领取页')
         self.enable = W.QPushButton('一键开启每日领取')
         self.disable = W.QPushButton('停用每日领取')
         self.check = W.QPushButton('立即领取 / 核对到账')
+        self.probe = W.QPushButton('检测自动领取通道')
+        self.probe.setToolTip('ASGSV 自行核对常用浏览器中的会员账号和奖励卡，本次检测不领取积分。')
         self.enable.setDefault(True)
         self.enable.setObjectName('verifyKey')
-        self.login.clicked.connect(lambda: dialog.start(lambda _: open_login(), dialog.feedback.setText, '正在打开专用登录窗口…'))
+        self.login.clicked.connect(lambda: dialog.start(lambda _: open_login(), dialog.feedback.setText, '正在打开官网专用领取页…'))
         self.enable.clicked.connect(lambda: self.schedule(True))
         self.disable.clicked.connect(lambda: self.schedule(False))
-        self.check.clicked.connect(lambda: dialog.start(lambda c: run(c.root), self.checked, '正在核对当天的赠送积分…'))
+        self.check.clicked.connect(lambda: dialog.start(lambda c: run(c.root), self.checked, 'ASGSV 正在领取并核对当天赠送积分…'))
+        self.probe.clicked.connect(lambda: dialog.start(lambda c: probe_member(c.root), dialog.feedback.setText,
+                                                       'ASGSV 正在临时打开官网，检测会员账号…'))
         form = W.QFormLayout(self)
-        info = W.QLabel('点「一键开启每日领取」。需要登录时，专用浏览器 会自动打开，登录后继续核对到账。'
-                        '工具会选用现有 Chrome 或 Edge，两者都没有时首次会下载专用 Chromium。之后只需电脑登录 Windows 并联网，日常浏览器 和工作台可以关闭。')
+        info = W.QLabel('仅在官网明确本账号可领 400 积分时领取。额度不明确时会保留本次机会。'
+                        '显示「已到账」时可查看实际金额、入账时间和流水尾号。'
+                        '专用浏览器只显示双档时，工具会临时打开常用浏览器的官网窗口，核对配音账号后自动领取并关窗。'
+                        '启用 Windows 计划后，日常浏览器和工作台均可提前关闭。')
         info.setWordWrap(True)
         form.addRow(info)
         key_row = W.QHBoxLayout()
@@ -57,6 +82,7 @@ class ClaimPane(W.QWidget):
         form.addRow('最近一次核对', self.result)
         other = W.QHBoxLayout()
         other.addWidget(self.check)
+        other.addWidget(self.probe)
         other.addWidget(self.login)
         other.addStretch()
         form.addRow('', other)
@@ -106,13 +132,10 @@ class ClaimPane(W.QWidget):
     def refresh(self, busy):
         try:
             state = read_record(status_path(self.root))
-            message = state.get('message', '尚未执行')
-            if state.get('checked_at'):
-                message = state['checked_at'][:19].replace('T', ' ') + ' · ' + message
-            if state.get('receipt'):
-                message += '\n流水编号 ' + state['receipt']
+            key = api_key(allow_environment=False) if state.get('account') else ''
+            message = result_text(state, account_scope(key) if key else '')
         except (OSError, ValueError) as exc:
             message = '无法读取领取记录 · ' + str(exc)
         self.result.setText(message)
-        for control in (self.key, self.get_key, self.login, self.enable, self.disable, self.check, self.when):
+        for control in (self.key, self.get_key, self.login, self.enable, self.disable, self.check, self.probe, self.when):
             control.setEnabled(not busy)

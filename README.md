@@ -2,7 +2,7 @@
 
 ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对白补上配音。它通过游戏日志定位当前台词。翻页时会停止上一句，迟到的合成结果会保存下来供下次使用。
 
-**[下载鸣潮 v0.4.24 Windows x64 便携版（CNB 国内）](https://cnb.cool/asgsv-studio/ASGSV/-/releases/download/wuwa-v0.4.24/ASGSV-v0.4.24-Windows-x64-Portable.zip)** · [GitHub 备用下载](https://github.com/emt-faze/ASGSV/releases/download/wuwa-v0.4.24/ASGSV-v0.4.24-Windows-x64-Portable.zip) · [发布说明及 SHA-256 校验](https://cnb.cool/asgsv-studio/ASGSV/-/releases/tag/wuwa-v0.4.24)
+**[下载 v0.4.25 Windows x64 便携版](https://github.com/emt-faze/ASGSV/releases/download/wuwa-v0.4.25/ASGSV-v0.4.25-Windows-x64-Portable.zip)** · [新手使用说明书（PDF）](https://github.com/emt-faze/ASGSV/releases/download/wuwa-v0.4.25/ASGSV-v0.4.25-Guide-zh-CN.pdf) · [全部附件与 SHA-256](https://github.com/emt-faze/ASGSV/releases/tag/wuwa-v0.4.25)
 
 ## 解压即用
 
@@ -29,14 +29,18 @@ ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对�
 
 从 v0.4.21 起，便携版和同版本更新助手默认选用 **CNB 国内发布**。打开启动检查或更新中心即可匿名下载程序、台词索引和任务包。设置中的 **更新台词索引** 也使用当前选定的站点。手动切换站点后，工作台先核对发布签名，再记住选择。
 
-**从 v0.4.23 升级**，在启动检查或更新中心选 **CNB 国内发布 → 一键在线升级**。从网盘升级时，直接导入 `ASGSV-v0.4.24-Update.zip`。工作台会沿用原安装目录里的录音、声线、账号和每日计划。
+**从 v0.4.24 升级**，在启动检查里选择 GitHub 发布源，再点「一键在线升级」。网盘用户在原工作台的更新中心导入 ASGSV-v0.4.25-Update.zip。更早版本可在线依次升级，或按版本顺序导入对应更新包。
 
 从 v0.4.17 至 v0.4.22 升级，可将 **ASGSV-Update-Assistant.zip** 中的 `ASGSV-Update` 文件夹解压到原来的 `ASGSV.exe` 旁。关闭工作台，双击 `Start-Update.bat`，依提示逐版升级到 v0.4.24。离线升级时，从比当前版本高一版的程序更新包开始，按版本号顺序导入。[下载更新助手](https://cnb.cool/asgsv-studio/ASGSV/-/releases/download/wuwa-v0.4.24/ASGSV-Update-Assistant.zip)
 
 - **更新台词索引或单个任务**：点 **一键更新全部资源** 可补齐索引和已发布的任务包。只更新一项时，点 **检查资源**，选中中文台词索引或任务名，再点 **更新选中资源**。任务库自动刷新，日志监听在下一句读取新配音。任务包仍须匹配本机游戏资源和角色声线。
 - **使用网盘**：下载发布方提供的与当前程序版本衔接的增量更新包、索引包或任务包，保持 ZIP 原样，点 **导入更新包…**。程序与资源共用签名校验。初次安装选文件名含 `Portable` 的完整便携包。
 
-## v0.4.24 功能
+## v0.4.25 功能
+
+在任务库点击角色名，可比较已有主声线和腾讯云免费备用声线。TTSMaker 使用免费网页逐句生成，支持导入 WAV 或 MP3。每日奖励可核对会员档位及实际入账。[免费备用源配置](nte-dialogue-ocr/docs/免费备用配音.md)
+
+### 任务库与选声
 
 这版把成品配音下载和新角色试音接进了任务库。AI 选声会区分本人自述、对方的称呼和转述，分别给出性别、年龄和说话方式的原句。证据有冲突时，只有这个角色进入待确认试音，其他角色继续每日计划。
 
@@ -51,6 +55,10 @@ ASGSV 是一款 Windows 桌面工具，为《鸣潮》没有原声的中文对�
 - **个性化** 支持自定义舞台背景、遮罩与虚化、自动收展的悬浮窗和专有名词发音词典。词典只影响要送去合成的文本，屏幕保留游戏原文。
 
 另有独立的异环发行版和使用文档。[异环专版下载与说明](https://github.com/emt-faze/ASGSV/releases/tag/dialogue-generator-v0.4.14-nte.4)
+
+## 社区配音开发版
+
+任务库已接入玩家投稿、按作者试听、下载及版本举报。当前处于普通 CNB 账号的上线验收阶段。v0.4.24 用户可继续从任务库下载已发布的官方配音包。[社区配音使用和验收说明](community/README.md)
 
 ## 仓库文件
 
